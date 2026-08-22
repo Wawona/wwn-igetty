@@ -1,6 +1,7 @@
 /* Mach inputd subscribe. Bitfield port descriptors stay in C. */
 #include <mach/mach.h>
 #include <mach/message.h>
+#include <mach/task.h>
 #include <bootstrap.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,30 +16,61 @@ extern void modeb_rs_handle_key(int key, int pressed);
 
 static mach_port_t g_input_recv = MACH_PORT_NULL;
 
+/*
+ * Mirror iland drm.c: after Classic unloads WindowServer the client
+ * bootstrap is a session subset. look_up of system MachServices fails;
+ * walk bootstrap_parent then retarget TASK_BOOTSTRAP_PORT.
+ */
 static int input_bootstrap_look_up(const char *name, mach_port_t *out) {
-  mach_port_t bp = MACH_PORT_NULL;
-  task_get_bootstrap_port(mach_task_self(), &bp);
+  mach_port_t bp = bootstrap_port;
+  mach_port_t root = bootstrap_port;
   kern_return_t kr = bootstrap_look_up(bp, (char *)name, out);
   if (kr == KERN_SUCCESS)
     return 0;
-  for (int depth = 0; depth < 8; depth++) {
+
+  fprintf(stderr, "[igettyd] inputd look_up %s: kr=%d %s (trying parents)\n",
+          name, (int)kr, mach_error_string(kr));
+
+  for (int depth = 1; depth <= 8; depth++) {
     mach_port_t parent = MACH_PORT_NULL;
     kern_return_t pkr = bootstrap_parent(bp, &parent);
-    if (pkr != KERN_SUCCESS || parent == MACH_PORT_NULL || parent == bp)
+    if (pkr != KERN_SUCCESS || parent == MACH_PORT_NULL || parent == bp) {
+      fprintf(stderr, "[igettyd] bootstrap_parent stop depth=%d pkr=%d\n",
+              depth, (int)pkr);
       break;
-    if (bp != bootstrap_port)
+    }
+    if (bp != bootstrap_port && bp != root)
       mach_port_deallocate(mach_task_self(), bp);
     bp = parent;
+    root = parent;
     kr = bootstrap_look_up(bp, (char *)name, out);
+    fprintf(stderr, "[igettyd] look_up via parent depth=%d kr=%d %s\n", depth,
+            (int)kr, mach_error_string(kr));
     if (kr == KERN_SUCCESS) {
       if (bp != bootstrap_port)
         mach_port_deallocate(mach_task_self(), bp);
       return 0;
     }
   }
-  if (bp != bootstrap_port)
+
+  if (root != MACH_PORT_NULL && root != bootstrap_port) {
+    kern_return_t skr =
+        task_set_special_port(mach_task_self(), TASK_BOOTSTRAP_PORT, root);
+    fprintf(stderr, "[igettyd] task_set_bootstrap_port root kr=%d\n",
+            (int)skr);
+    if (skr == KERN_SUCCESS) {
+      bootstrap_port = root;
+      kr = bootstrap_look_up(bootstrap_port, (char *)name, out);
+      fprintf(stderr, "[igettyd] look_up after retarget kr=%d %s\n", (int)kr,
+              mach_error_string(kr));
+      if (kr == KERN_SUCCESS)
+        return 0;
+    }
+  }
+
+  if (bp != bootstrap_port && bp != root)
     mach_port_deallocate(mach_task_self(), bp);
-  fprintf(stderr, "[igettyd] inputd look_up %s: %s\n", name,
+  fprintf(stderr, "[igettyd] inputd look_up %s failed: %s\n", name,
           mach_error_string(kr));
   return -1;
 }
