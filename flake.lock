@@ -1,0 +1,212 @@
+{
+  "nodes": {
+    "android-nixpkgs": {
+      "inputs": {
+        "devshell": "devshell",
+        "flake-utils": "flake-utils",
+        "nixpkgs": [
+          "wwn-toolchain",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1775076220,
+        "narHash": "sha256-QlDAqxJAHakV7GYR97T4hx7trqMI08axwNkp9Db8U7Q=",
+        "owner": "tadfisher",
+        "repo": "android-nixpkgs",
+        "rev": "5585cc3ee71bdd8d9ee255523f11b920138fa688",
+        "type": "github"
+      },
+      "original": {
+        "owner": "tadfisher",
+        "repo": "android-nixpkgs",
+        "rev": "5585cc3ee71bdd8d9ee255523f11b920138fa688",
+        "type": "github"
+      }
+    },
+    "devshell": {
+      "inputs": {
+        "nixpkgs": [
+          "wwn-toolchain",
+          "android-nixpkgs",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1768818222,
+        "narHash": "sha256-460jc0+CZfyaO8+w8JNtlClB2n4ui1RbHfPTLkpwhU8=",
+        "owner": "numtide",
+        "repo": "devshell",
+        "rev": "255a2b1725a20d060f566e4755dbf571bbbb5f76",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "devshell",
+        "type": "github"
+      }
+    },
+    "doorman": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1784751971,
+        "narHash": "sha256-mDuUZvhvU7t6DYneGQoKukyWfQW/vksZdbpWUf6Zehk=",
+        "owner": "Wawona",
+        "repo": "doorman",
+        "rev": "2ad2046bf69431c5a883cbfa67543ad378128d30",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Wawona",
+        "repo": "doorman",
+        "type": "github"
+      }
+    },
+    "flake-utils": {
+      "inputs": {
+        "systems": "systems"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1731603435,
+        "narHash": "sha256-CqCX4JG7UiHvkrBTpYC3wcEurvbtTADLbo3Ns2CEoL8=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "8b27c1239e5c421a2bbc2c65d52e4a6fbf2ff296",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "24.11",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1787172299,
+        "narHash": "sha256-PShzS87awOlE5XWkxUGBd/58/F+AtE2ZMgFffKj4r8s=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "07e1d92cdc0ed416cfa11ff3ca40d17e61cfba7a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "doorman": "doorman",
+        "nixpkgs": "nixpkgs_2",
+        "rust-overlay": "rust-overlay",
+        "wwn-iland": "wwn-iland",
+        "wwn-toolchain": "wwn-toolchain"
+      }
+    },
+    "rust-overlay": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787367552,
+        "narHash": "sha256-YT4Fs2k7bi+7YzuLt93EtIRgjpwHK5ZfsQEIh5dEQSk=",
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "rev": "fd2ebb9cc4323d0c5a1336138dab5c3c5a5d8bd9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "type": "github"
+      }
+    },
+    "systems": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    },
+    "wwn-iland": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-overlay": [
+          "rust-overlay"
+        ],
+        "wwn-toolchain": [
+          "wwn-toolchain"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787359329,
+        "narHash": "sha256-1bpRNNdxYroqCQlmpNG2H7IV8rsrgpC4Bhf6v4M05gw=",
+        "rev": "8f3a67a5c43c3de062d38cdb4c69da1885f45788",
+        "revCount": 89,
+        "type": "tarball",
+        "url": "https://api.flakehub.com/f/pinned/Wawona/wwn-iland/0.1.89%2Brev-8f3a67a5c43c3de062d38cdb4c69da1885f45788/01a026eb-b7ca-7431-b886-240a6cfa1b31/source.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://flakehub.com/f/Wawona/wwn-iland/%2A"
+      }
+    },
+    "wwn-toolchain": {
+      "inputs": {
+        "android-nixpkgs": "android-nixpkgs",
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-overlay": [
+          "rust-overlay"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787064924,
+        "narHash": "sha256-OsyLzl8sXYXEC1yEgUFG3y9LwscwCTr/m6rcrJXweKs=",
+        "rev": "2ef4b892604563719b5cc459b07b0e07b87de21c",
+        "revCount": 58,
+        "type": "tarball",
+        "url": "https://api.flakehub.com/f/pinned/Wawona/wwn-toolchain/0.1.58%2Brev-2ef4b892604563719b5cc459b07b0e07b87de21c/01a0155f-7a16-7593-af01-d280a2adc72d/source.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://flakehub.com/f/Wawona/wwn-toolchain/%2A"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
