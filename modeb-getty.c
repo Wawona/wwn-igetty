@@ -228,7 +228,7 @@ int main(int argc, char **argv) {
   setenv("WWN_MODEB_TTY", "1", 1);
 
   printf("\nWawona Mode B TTY (Doorman login / Linux getty parity)\n"
-         "Ctrl+Option+F1-F6 switch VT | F7 kmscube | "
+         "Ctrl+Option+F1-F6 switch VT | Ctrl+Option+F7 kmscube | "
          "Ctrl+Option+Backspace Aqua\n");
   fflush(stdout);
 

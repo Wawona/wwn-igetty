@@ -9,8 +9,11 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 const VT_TEXT_COUNT: usize = 6;
+const VT_KMS: i32 = 7;
 const COLS_MAX: i32 = 512;
 const ROWS_MAX: i32 = 256;
+/// base16 `base0B` (terminal green). Solarized-dark slot: #859900.
+const BASE0B: u32 = 0xFF00_9985;
 const MODEB_MAX_OUTPUTS: usize = 8;
 const VT_FILE: &str = "/tmp/libwayland-support/modeb-vt";
 const DRM_MODE_CONNECTED: u32 = 1;
@@ -53,6 +56,7 @@ struct App {
     cell_h: i32,
     gfx_pid: i32,
     gui_argv: Vec<String>,
+    kms_path: String,
     getty: String,
 }
 
@@ -277,6 +281,7 @@ extern "C" {
     fn execl(path: *const c_char, arg0: *const c_char, ...) -> i32;
     fn execvp(file: *const c_char, argv: *const *const c_char) -> i32;
     fn setenv(name: *const c_char, value: *const c_char, overwrite: i32) -> i32;
+    fn unsetenv(name: *const c_char) -> i32;
     fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32;
     fn read(fd: i32, buf: *mut u8, n: usize) -> isize;
     fn write(fd: i32, buf: *const u8, n: usize) -> isize;
@@ -317,7 +322,7 @@ const WNOHANG: i32 = 1;
 const CLOCK_MONOTONIC: i32 = 6;
 const R_OK: i32 = 4;
 const X_OK: i32 = 1;
-const VTERM_DAMAGE_SCREEN: i32 = 2;
+const VTERM_DAMAGE_ROW: i32 = 1;
 
 extern "C" fn on_signal(_sig: i32) {
     RUN.store(false, Ordering::SeqCst);
@@ -472,6 +477,35 @@ unsafe fn draw_cell(app: &App, o: &Output, v: &Vt, row: i32, col: i32) {
     }
 }
 
+unsafe fn draw_vt_label(app: &App, o: &Output, vt: i32) {
+    if modeb_ctfont_ready() == 0 || app.cell_w <= 0 {
+        return;
+    }
+    let label = format!("tty{:02}", vt);
+    let fg = BASE0B;
+    let bg = rgb_bgra(0x10, 0x10, 0x10);
+    let chars: Vec<u32> = label.chars().map(|c| c as u32).collect();
+    let w = chars.len() as i32 * app.cell_w;
+    let mut px = o.w - w - app.cell_w;
+    if px < 0 {
+        px = 0;
+    }
+    let py = app.cell_h / 4;
+    for (i, cp) in chars.iter().enumerate() {
+        modeb_ctfont_blit(
+            o.fb,
+            o.pitch,
+            o.w,
+            o.h,
+            px + i as i32 * app.cell_w,
+            py,
+            *cp,
+            fg,
+            bg,
+        );
+    }
+}
+
 unsafe fn overlay_cursor(app: &App, o: &Output, v: &Vt) {
     if !CURSOR_ON.load(Ordering::Relaxed) || v.vt.is_null() {
         return;
@@ -521,6 +555,7 @@ unsafe fn render_active_text(app: &mut App) {
             }
         }
         overlay_cursor(app, o, v);
+        draw_vt_label(app, o, av);
     }
     present(app);
     app.vts[idx].dirty = false;
@@ -753,7 +788,7 @@ unsafe fn vt_init(getty: &str, cell_w: i32, cell_h: i32, v: &mut Vt, cols: i32, 
     vterm_set_utf8(v.vt, 1);
     v.screen = vterm_obtain_screen(v.vt);
     vterm_screen_set_callbacks(v.screen, &SCREEN_CBS, v as *mut Vt as *mut c_void);
-    vterm_screen_set_damage_merge(v.screen, VTERM_DAMAGE_SCREEN);
+    vterm_screen_set_damage_merge(v.screen, VTERM_DAMAGE_ROW);
     vterm_screen_enable_altscreen(v.screen, 1);
     let fg = VTermColor {
         data: [0, 0xe0, 0xe0, 0xe0],
@@ -910,6 +945,14 @@ unsafe fn stop_graphics(app: &mut App) {
     }
 }
 
+unsafe fn child_clear_nested_wayland() {
+    for k in ["WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY"] {
+        if let Ok(c) = CString::new(k) {
+            unsetenv(c.as_ptr());
+        }
+    }
+}
+
 unsafe fn start_graphics(app: &mut App) {
     if app.gfx_pid > 0 {
         return;
@@ -920,6 +963,13 @@ unsafe fn start_graphics(app: &mut App) {
     }
     let pid = fork();
     if pid == 0 {
+        child_clear_nested_wayland();
+        let nb = CString::new("NIRI_BACKEND").unwrap();
+        let tty = CString::new("tty").unwrap();
+        setenv(nb.as_ptr(), tty.as_ptr(), 1);
+        if app.drm_fd >= 0 {
+            close(app.drm_fd);
+        }
         let cstrs: Vec<CString> = app
             .gui_argv
             .iter()
@@ -933,10 +983,42 @@ unsafe fn start_graphics(app: &mut App) {
     if pid > 0 {
         app.gfx_pid = pid;
         eprint(&format!(
-            "[igettyd] GUI VT{} argv={:?} pid={}\n",
+            "[igettyd] GUI VT{} argv={:?} pid={} NIRI_BACKEND=tty\n",
             GUI_VT.load(Ordering::SeqCst),
             app.gui_argv,
             pid
+        ));
+    }
+}
+
+fn is_kms_vt(vt: i32) -> bool {
+    vt == VT_KMS
+}
+
+unsafe fn start_kmscube(app: &mut App) {
+    if app.gfx_pid > 0 {
+        return;
+    }
+    if app.kms_path.is_empty() {
+        eprint("[igettyd] F7: no kmscube (WWN_MODEB_KMSCUBE)\n");
+        return;
+    }
+    let pid = fork();
+    if pid == 0 {
+        child_clear_nested_wayland();
+        if app.drm_fd >= 0 {
+            close(app.drm_fd);
+        }
+        let p = CString::new(app.kms_path.as_str()).unwrap();
+        let a = CString::new("kmscube").unwrap();
+        execl(p.as_ptr(), a.as_ptr(), ptr::null::<c_char>());
+        libc_exit(127);
+    }
+    if pid > 0 {
+        app.gfx_pid = pid;
+        eprint(&format!(
+            "[igettyd] F7 kmscube {} pid={}\n",
+            app.kms_path, pid
         ));
     }
 }
@@ -947,7 +1029,7 @@ fn is_gui_vt(vt: i32) -> bool {
 }
 
 unsafe fn switch_vt(app: &mut App, vt: i32) {
-    if vt < 1 || vt > VT_TEXT_COUNT as i32 {
+    if vt < 1 || (vt > VT_TEXT_COUNT as i32 && !is_kms_vt(vt)) {
         return;
     }
     let cur = ACTIVE_VT.load(Ordering::SeqCst);
@@ -955,12 +1037,23 @@ unsafe fn switch_vt(app: &mut App, vt: i32) {
         return;
     }
     eprint(&format!("[igettyd] switch VT {cur} -> {vt}\n"));
+    if is_kms_vt(vt) {
+        if is_gui_vt(cur) || is_kms_vt(cur) {
+            stop_graphics(app);
+        }
+        ACTIVE_VT.store(vt, Ordering::SeqCst);
+        start_kmscube(app);
+        return;
+    }
     if is_gui_vt(vt) {
+        if is_kms_vt(cur) {
+            stop_graphics(app);
+        }
         ACTIVE_VT.store(vt, Ordering::SeqCst);
         start_graphics(app);
         return;
     }
-    if is_gui_vt(cur) {
+    if is_gui_vt(cur) || is_kms_vt(cur) {
         stop_graphics(app);
     }
     ACTIVE_VT.store(vt, Ordering::SeqCst);
@@ -1005,7 +1098,6 @@ pub extern "C" fn modeb_rs_handle_key(key: i32, pressed: i32) {
         }
         let ctrl = CTRL.load(Ordering::SeqCst);
         let alt = ALT.load(Ordering::SeqCst);
-        eprint(&format!("[igettyd] key={key} ctrl={ctrl} alt={alt}\n"));
         if ctrl != 0 && alt != 0 {
             if key == 14 {
                 CTRL.store(0, Ordering::SeqCst);
@@ -1013,7 +1105,7 @@ pub extern "C" fn modeb_rs_handle_key(key: i32, pressed: i32) {
                 modeb_request_restore();
                 return;
             }
-            if (59..=64).contains(&key) {
+            if (59..=65).contains(&key) {
                 let vt = key - 59 + 1;
                 if let Ok(mut f) = std::fs::File::create(VT_FILE) {
                     let _ = write!(f, "{vt}\n");
@@ -1025,6 +1117,9 @@ pub extern "C" fn modeb_rs_handle_key(key: i32, pressed: i32) {
             }
         }
         let av = ACTIVE_VT.load(Ordering::SeqCst);
+        if is_gui_vt(av) || is_kms_vt(av) {
+            return;
+        }
         if av < 1 || av > VT_TEXT_COUNT as i32 {
             return;
         }
@@ -1182,6 +1277,14 @@ fn main() {
             cell_h: 8,
             gfx_pid: -1,
             gui_argv: load_gui_argv(),
+            kms_path: {
+                let k = find_sidecar("kmscube", "WWN_MODEB_KMSCUBE");
+                if k.is_empty() {
+                    find_sidecar("kmscube", "WWN_IGETTY_KMSCUBE")
+                } else {
+                    k
+                }
+            },
             getty: {
                 let g = find_sidecar("igetty", "WWN_IGETTY_GETTY");
                 if g.is_empty() {
@@ -1198,9 +1301,14 @@ fn main() {
             eprint(&format!("[igettyd] getty={}\n", app.getty));
         }
         eprint(&format!(
-            "[igettyd] GUI VT={} argv={:?}\n",
+            "[igettyd] GUI VT={} argv={:?} kmscube={}\n",
             GUI_VT.load(Ordering::SeqCst),
-            app.gui_argv
+            app.gui_argv,
+            if app.kms_path.is_empty() {
+                "(none)"
+            } else {
+                app.kms_path.as_str()
+            }
         ));
         if setup_drm(&mut app) != 0 {
             std::process::exit(1);
@@ -1254,7 +1362,7 @@ fn main() {
 
         let banner = b"\r\nwwn-igetty (Doorman login + Linux-shaped VTs)\r\n\
 Ctrl+Option+F1-F6 switch VTs. Assigned GUI VT runs the Desktop machine.\r\n\
-Ctrl+Option+Backspace restores Aqua.\r\n\
+Ctrl+Option+F7 kmscube. Ctrl+Option+Backspace restores Aqua.\r\n\
 (MacBook: hold Fn for F-keys if needed)\r\n\r\n";
         let text0 = first_text_vt();
         if (1..=VT_TEXT_COUNT as i32).contains(&text0) {
@@ -1283,7 +1391,7 @@ Ctrl+Option+Backspace restores Aqua.\r\n\
             clock_gettime(CLOCK_MONOTONIC, &mut ts);
             let ms = ts.tv_sec * 1000 + ts.tv_nsec / 1_000_000;
             let on = ((ms / 530) & 1) != 0;
-                if on != CURSOR_ON.load(Ordering::Relaxed) {
+            if on != CURSOR_ON.load(Ordering::Relaxed) {
                 CURSOR_ON.store(on, Ordering::Relaxed);
                 let av = ACTIVE_VT.load(Ordering::SeqCst);
                 if (1..=VT_TEXT_COUNT as i32).contains(&av) && !is_gui_vt(av) {
@@ -1350,8 +1458,10 @@ Ctrl+Option+Backspace restores Aqua.\r\n\
                 let mut st = 0;
                 let r = waitpid(app.gfx_pid, &mut st, WNOHANG);
                 if r == app.gfx_pid {
+                    eprint("[igettyd] graphics client exited\n");
                     app.gfx_pid = -1;
-                    if is_gui_vt(ACTIVE_VT.load(Ordering::SeqCst)) {
+                    let av = ACTIVE_VT.load(Ordering::SeqCst);
+                    if is_gui_vt(av) || is_kms_vt(av) {
                         switch_vt(app, first_text_vt());
                     }
                 }

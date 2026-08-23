@@ -12,6 +12,9 @@ static int g_cw;
 static int g_ch;
 static CGColorSpaceRef g_cs;
 static int g_yflip;
+/* CoreDisplay presents the dumb IOSurface with origin at the bottom.
+ * Cover bitmaps stay upright (selftest); blit row-reverses into the FB. */
+static int g_present_rowflip = 1;
 
 #define CACHE_N 4096
 typedef struct {
@@ -250,8 +253,9 @@ int modeb_ctfont_init(const char *ttf_path, float pt_size) {
     CFRelease(full);
   }
   fprintf(stderr,
-          "[igettyd] font '%s' cell %dx%d pt=%.1f yflip=%d (SF Mono)\n",
-          name, g_cw, g_ch, (double)pt_size, g_yflip);
+          "[igettyd] font '%s' cell %dx%d pt=%.1f yflip=%d present_rowflip=%d "
+          "(SF Mono)\n",
+          name, g_cw, g_ch, (double)pt_size, g_yflip, g_present_rowflip);
   return 0;
 }
 
@@ -276,7 +280,8 @@ void modeb_ctfont_blit(uint32_t *fb, uint32_t pitch_bytes, int fb_w, int fb_h,
       int X = px + x;
       if (X < 0 || X >= fb_w)
         continue;
-      uint8_t a = cover ? cover[y * g_cw + x] : 0;
+      int cy = g_present_rowflip ? (g_ch - 1 - y) : y;
+      uint8_t a = cover ? cover[cy * g_cw + x] : 0;
       uint8_t r = (uint8_t)((br * (255 - a) + fr * a) / 255);
       uint8_t g = (uint8_t)((bg * (255 - a) + fg * a) / 255);
       uint8_t b = (uint8_t)((bb * (255 - a) + fb_ * a) / 255);
