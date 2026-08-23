@@ -9,7 +9,10 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 const VT_TEXT_COUNT: usize = 6;
-const VT_KMS: i32 = 7;
+const VT_OVERLAY_FIRST: i32 = 7;
+const VT_OVERLAY_LAST: i32 = 9;
+const KEY_F1: i32 = 59;
+const KEY_F9: i32 = 67;
 const COLS_MAX: i32 = 512;
 const ROWS_MAX: i32 = 256;
 /// base16 `base0B` (terminal green). Solarized-dark slot: #859900.
@@ -48,6 +51,12 @@ struct Vt {
     dirty: bool,
 }
 
+struct OverlayClient {
+    vt: i32,
+    path: String,
+    argv0: String,
+}
+
 struct App {
     drm_fd: i32,
     outs: Vec<Output>,
@@ -56,7 +65,7 @@ struct App {
     cell_h: i32,
     gfx_pid: i32,
     gui_argv: Vec<String>,
-    kms_path: String,
+    overlays: [OverlayClient; 3],
     getty: String,
 }
 
@@ -963,6 +972,8 @@ unsafe fn start_graphics(app: &mut App) {
     }
     let pid = fork();
     if pid == 0 {
+        /* Mode B Classic has no host Wayland display. Weston/niri keep their
+         * nested backends for Mode A Machines Start. This child is own-display. */
         child_clear_nested_wayland();
         let nb = CString::new("NIRI_BACKEND").unwrap();
         let tty = CString::new("tty").unwrap();
@@ -992,33 +1003,43 @@ unsafe fn start_graphics(app: &mut App) {
 }
 
 fn is_kms_vt(vt: i32) -> bool {
-    vt == VT_KMS
+    (VT_OVERLAY_FIRST..=VT_OVERLAY_LAST).contains(&vt)
 }
 
-unsafe fn start_kmscube(app: &mut App) {
+fn overlay_for_vt(app: &App, vt: i32) -> Option<&OverlayClient> {
+    app.overlays
+        .iter()
+        .find(|o| o.vt == vt && !o.path.is_empty())
+}
+
+unsafe fn start_overlay(app: &mut App, vt: i32) {
     if app.gfx_pid > 0 {
         return;
     }
-    if app.kms_path.is_empty() {
-        eprint("[igettyd] F7: no kmscube (WWN_MODEB_KMSCUBE)\n");
+    let Some(o) = overlay_for_vt(app, vt) else {
+        eprint(&format!(
+            "[igettyd] VT{vt}: no DRM/KMS sidecar (WWN_MODEB_KMSCUBE / GBM_ES2 / VKCUBE)\n"
+        ));
         return;
-    }
+    };
+    let path = o.path.clone();
+    let argv0 = o.argv0.clone();
     let pid = fork();
     if pid == 0 {
         child_clear_nested_wayland();
         if app.drm_fd >= 0 {
             close(app.drm_fd);
         }
-        let p = CString::new(app.kms_path.as_str()).unwrap();
-        let a = CString::new("kmscube").unwrap();
+        let p = CString::new(path.as_str()).unwrap();
+        let a = CString::new(argv0.as_str()).unwrap();
         execl(p.as_ptr(), a.as_ptr(), ptr::null::<c_char>());
         libc_exit(127);
     }
     if pid > 0 {
         app.gfx_pid = pid;
         eprint(&format!(
-            "[igettyd] F7 kmscube {} pid={}\n",
-            app.kms_path, pid
+            "[igettyd] VT{vt} overlay {} ({}) pid={}\n",
+            argv0, path, pid
         ));
     }
 }
@@ -1042,7 +1063,7 @@ unsafe fn switch_vt(app: &mut App, vt: i32) {
             stop_graphics(app);
         }
         ACTIVE_VT.store(vt, Ordering::SeqCst);
-        start_kmscube(app);
+        start_overlay(app, vt);
         return;
     }
     if is_gui_vt(vt) {
@@ -1105,8 +1126,8 @@ pub extern "C" fn modeb_rs_handle_key(key: i32, pressed: i32) {
                 modeb_request_restore();
                 return;
             }
-            if (59..=65).contains(&key) {
-                let vt = key - 59 + 1;
+            if (KEY_F1..=KEY_F9).contains(&key) {
+                let vt = key - KEY_F1 + 1;
                 if let Ok(mut f) = std::fs::File::create(VT_FILE) {
                     let _ = write!(f, "{vt}\n");
                 }
@@ -1173,24 +1194,58 @@ fn executable_dir() -> Option<String> {
 }
 
 fn find_sidecar(name: &str, env_key: &str) -> String {
-    if let Some(e) = env_str(env_key) {
-        let c = CString::new(e.as_str()).unwrap();
-        unsafe {
-            if access(c.as_ptr(), X_OK) == 0 {
-                return e;
+    find_sidecar_any(&[name], &[env_key])
+}
+
+fn find_sidecar_any(names: &[&str], env_keys: &[&str]) -> String {
+    for env_key in env_keys {
+        if let Some(e) = env_str(env_key) {
+            let c = CString::new(e.as_str()).unwrap();
+            unsafe {
+                if access(c.as_ptr(), X_OK) == 0 {
+                    return e;
+                }
             }
         }
     }
     if let Some(dir) = executable_dir() {
-        let p = format!("{dir}/{name}");
-        let c = CString::new(p.as_str()).unwrap();
-        unsafe {
-            if access(c.as_ptr(), X_OK) == 0 {
-                return p;
+        for name in names {
+            let p = format!("{dir}/{name}");
+            let c = CString::new(p.as_str()).unwrap();
+            unsafe {
+                if access(c.as_ptr(), X_OK) == 0 {
+                    return p;
+                }
             }
         }
     }
     String::new()
+}
+
+fn load_overlays() -> [OverlayClient; 3] {
+    [
+        OverlayClient {
+            vt: 7,
+            path: find_sidecar_any(
+                &["kmscube"],
+                &["WWN_MODEB_KMSCUBE", "WWN_IGETTY_KMSCUBE"],
+            ),
+            argv0: "kmscube".into(),
+        },
+        OverlayClient {
+            vt: 8,
+            path: find_sidecar_any(
+                &["gbm-es2-demo", "gbm_es2_demo"],
+                &["WWN_MODEB_GBM_ES2"],
+            ),
+            argv0: "gbm-es2-demo".into(),
+        },
+        OverlayClient {
+            vt: 9,
+            path: find_sidecar_any(&["vkcube-kms"], &["WWN_MODEB_VKCUBE"]),
+            argv0: "vkcube-kms".into(),
+        },
+    ]
 }
 
 unsafe fn poll_vt_file(app: &mut App, last: &mut i32) {
@@ -1248,6 +1303,14 @@ fn first_text_vt() -> i32 {
     1
 }
 
+fn overlay_label(o: &OverlayClient) -> &str {
+    if o.path.is_empty() {
+        "(none)"
+    } else {
+        o.path.as_str()
+    }
+}
+
 fn empty_vt() -> Vt {
     Vt {
         master: -1,
@@ -1277,14 +1340,7 @@ fn main() {
             cell_h: 8,
             gfx_pid: -1,
             gui_argv: load_gui_argv(),
-            kms_path: {
-                let k = find_sidecar("kmscube", "WWN_MODEB_KMSCUBE");
-                if k.is_empty() {
-                    find_sidecar("kmscube", "WWN_IGETTY_KMSCUBE")
-                } else {
-                    k
-                }
-            },
+            overlays: load_overlays(),
             getty: {
                 let g = find_sidecar("igetty", "WWN_IGETTY_GETTY");
                 if g.is_empty() {
@@ -1301,14 +1357,12 @@ fn main() {
             eprint(&format!("[igettyd] getty={}\n", app.getty));
         }
         eprint(&format!(
-            "[igettyd] GUI VT={} argv={:?} kmscube={}\n",
+            "[igettyd] GUI VT={} argv={:?} F7={} F8={} F9={}\n",
             GUI_VT.load(Ordering::SeqCst),
             app.gui_argv,
-            if app.kms_path.is_empty() {
-                "(none)"
-            } else {
-                app.kms_path.as_str()
-            }
+            overlay_label(&app.overlays[0]),
+            overlay_label(&app.overlays[1]),
+            overlay_label(&app.overlays[2]),
         ));
         if setup_drm(&mut app) != 0 {
             std::process::exit(1);
@@ -1362,8 +1416,9 @@ fn main() {
 
         let banner = b"\r\nwwn-igetty (Doorman login + Linux-shaped VTs)\r\n\
 Ctrl+Option+F1-F6 switch VTs. Assigned GUI VT runs the Desktop machine.\r\n\
-Ctrl+Option+F7 kmscube. Ctrl+Option+Backspace restores Aqua.\r\n\
-(MacBook: hold Fn for F-keys if needed)\r\n\r\n";
+Weston/niri on that VT use their DRM backend (no host Wayland after Take Over).\r\n\
+Ctrl+Option+F7 kmscube. F8 gbm-es2-demo. F9 vkcube-kms.\r\n\
+Ctrl+Option+Backspace restores Aqua. (MacBook: hold Fn for F-keys if needed)\r\n\r\n";
         let text0 = first_text_vt();
         if (1..=VT_TEXT_COUNT as i32).contains(&text0) {
             vt_feed(&mut app.vts[(text0 - 1) as usize], banner);

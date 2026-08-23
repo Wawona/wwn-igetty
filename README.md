@@ -7,8 +7,13 @@ KMS live in **wwn-iland** `iland-baremetal`.
 ```text
 iland-baremetal dylib  →  take over display (framebufferd / inputd)
 wwn-igetty (this repo) →  VT switcher + Doorman getty on text VTs
-assigned GUI VT        →  weston / niri / kmscube (Desktop Machine)
+assigned GUI VT        →  weston / niri (DRM backend) or kmscube / gbm-es2 / vkcube-kms
 ```
+
+Weston and niri are **not** DRM-only. Machines Start still nests them
+(`--backend=wayland` / `NIRI_BACKEND=nested`) when Display Backend is Wayland.
+After Classic Take Over there is no host Wayland, so the GUI VT uses each
+compositor's own DRM/KMS/GBM backend (`--backend=drm` / `NIRI_BACKEND=tty`).
 
 The GUI session is **assigned a VT**. It is not hardcoded as VT1. Linux often
 puts GDM on `/dev/tty1`, but a display manager can pick another number.
@@ -24,10 +29,12 @@ solarized-dark `#859900`).
 | `WWN_IGETTY_GUI_ARGS` | remaining argv, separated by U+001F |
 | `WWN_IGETTY_GETTY` | Doorman login helper (`igetty`) |
 | `WWN_MODEB_KMSCUBE` | kmscube for Ctrl+Option+F7 |
+| `WWN_MODEB_GBM_ES2` | gbm-es2-demo for Ctrl+Option+F8 |
+| `WWN_MODEB_VKCUBE` | vkcube-kms for Ctrl+Option+F9 |
 
 Text VTs (every number 1-6 except the GUI VT) run `igetty` (Doorman). Switch
-with Ctrl+Option+F1-F6 (Option is Alt). Ctrl+Option+F7 starts kmscube on the
-same DRM path. Ctrl+Option+Backspace restores Aqua.
+with Ctrl+Option+F1-F6 (Option is Alt). Overlay KMS clients: F7 kmscube, F8
+gbm-es2-demo, F9 vkcube-kms. Ctrl+Option+Backspace restores Aqua.
 
 Auth: [Doorman](https://github.com/Wawona/doorman) as a library. Do not call
 `doorman_open_session()` (that forks/setsid off the PTY).
