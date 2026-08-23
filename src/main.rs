@@ -3,9 +3,9 @@
 //! Text update follows Linux `fbcon`, not a full-screen compositor redraw:
 //! `fbcon_putcs` / damage rects, `fbcon_bmove` pixel copy on scroll,
 //! `fbcon_clear` fill for blank cells, `fbcon_cursor` invert one cell at 200ms.
-//! Present is an iland pageflip. framebufferd bounce-copies a dumb BO that
-//! is flipped in place, because CoreDisplay ignores presentSurface of the
-//! same IOSurface object (Classic has no WindowServer).
+//! Present ping-pongs two dumb BOs. CoreDisplay ignores presentSurface of
+//! the same IOSurface (Classic has no WindowServer). F7 then F1 worked
+//! because kmscube presented a different BO first.
 #![allow(dead_code)]
 #![allow(clippy::missing_safety_doc)]
 
@@ -41,6 +41,11 @@ static GUI_VT: AtomicI32 = AtomicI32::new(0);
 struct Output {
     crtc_id: u32,
     conn_id: u32,
+    /// Ping-pong scanout. CoreDisplay ignores presentSurface of the same
+    /// IOSurface; F7/F1 worked because kmscube presented a different BO.
+    fb_ids: [u32; 2],
+    maps: [*mut u32; 2],
+    front: usize,
     fb_id: u32,
     pitch: u32,
     fb: *mut u32,
@@ -564,15 +569,25 @@ unsafe fn copy_vt_rect(app: &App, _v: &Vt, dest: VTermRect, src: VTermRect) {
     }
 }
 
-unsafe fn present(app: &App) {
-    for o in &app.outs {
-        if drmModePageFlip(app.drm_fd, o.crtc_id, o.fb_id, 0, ptr::null_mut()) != 0 {
+unsafe fn present(app: &mut App) {
+    for o in &mut app.outs {
+        let back = 1 - o.front;
+        let nbytes = o.pitch as usize * o.h as usize;
+        if !o.maps[o.front].is_null() && !o.maps[back].is_null() && nbytes > 0 {
+            ptr::copy_nonoverlapping(
+                o.maps[o.front] as *const u8,
+                o.maps[back] as *mut u8,
+                nbytes,
+            );
+        }
+        let fb = o.fb_ids[back];
+        if drmModePageFlip(app.drm_fd, o.crtc_id, fb, 0, ptr::null_mut()) != 0 {
             let conn = [o.conn_id];
             let mut mode = o.mode;
             drmModeSetCrtc(
                 app.drm_fd,
                 o.crtc_id,
-                o.fb_id,
+                fb,
                 0,
                 0,
                 conn.as_ptr(),
@@ -580,6 +595,9 @@ unsafe fn present(app: &App) {
                 &mut mode,
             );
         }
+        o.front = back;
+        o.fb_id = fb;
+        o.fb = o.maps[back];
     }
 }
 
@@ -790,6 +808,30 @@ unsafe fn render_active_text(app: &mut App) {
     present(app);
 }
 
+unsafe fn create_dumb_fb(
+    drm_fd: i32,
+    w: u32,
+    h: u32,
+    pitch: &mut u32,
+    fb_id: &mut u32,
+    map: &mut *mut u32,
+) -> bool {
+    let mut handle = 0u32;
+    let mut size = 0u64;
+    if drmModeCreateDumbBuffer(drm_fd, w, h, 32, 0, &mut handle, pitch, &mut size) != 0 {
+        return false;
+    }
+    let mut map_off = 0u64;
+    if drmModeMapDumbBuffer(drm_fd, handle, &mut map_off) != 0 {
+        return false;
+    }
+    *map = map_off as *mut u32;
+    if (*map).is_null() {
+        return false;
+    }
+    drmModeAddFB(drm_fd, w, h, 24, 32, *pitch, handle, fb_id) == 0
+}
+
 unsafe fn add_output(app: &mut App, res: *mut DrmModeRes, conn: *mut DrmModeConnector, mut used: u32) -> u32 {
     if app.outs.len() >= MODEB_MAX_OUTPUTS || conn.is_null() || (*conn).count_modes < 1 {
         return used;
@@ -829,29 +871,24 @@ unsafe fn add_output(app: &mut App, res: *mut DrmModeRes, conn: *mut DrmModeConn
     }
     let w = mode.hdisplay as i32;
     let h = mode.vdisplay as i32;
-    let mut handle = 0u32;
     let mut pitch = 0u32;
-    let mut size = 0u64;
-    if drmModeCreateDumbBuffer(app.drm_fd, w as u32, h as u32, 32, 0, &mut handle, &mut pitch, &mut size)
-        != 0
-    {
-        eprint("[igettyd] CreateDumbBuffer failed\n");
-        return used;
+    let mut fb_ids = [0u32; 2];
+    let mut maps = [ptr::null_mut::<u32>(); 2];
+    for i in 0..2 {
+        if !create_dumb_fb(
+            app.drm_fd,
+            w as u32,
+            h as u32,
+            &mut pitch,
+            &mut fb_ids[i],
+            &mut maps[i],
+        ) {
+            eprint("[igettyd] CreateDumbBuffer/AddFB failed\n");
+            return used;
+        }
     }
-    let mut map_off = 0u64;
-    if drmModeMapDumbBuffer(app.drm_fd, handle, &mut map_off) != 0 {
-        eprint("[igettyd] MapDumbBuffer failed\n");
-        return used;
-    }
-    let fb = map_off as *mut u32;
-    if fb.is_null() {
-        return used;
-    }
-    let mut fb_id = 0u32;
-    if drmModeAddFB(app.drm_fd, w as u32, h as u32, 24, 32, pitch, handle, &mut fb_id) != 0 {
-        eprint("[igettyd] AddFB failed\n");
-        return used;
-    }
+    let fb_id = fb_ids[0];
+    let fb = maps[0];
     let conn_id = (*conn).connector_id;
     let connectors = [conn_id];
     let mut mode_mut = mode;
@@ -875,6 +912,9 @@ unsafe fn add_output(app: &mut App, res: *mut DrmModeRes, conn: *mut DrmModeConn
     app.outs.push(Output {
         crtc_id: crtc,
         conn_id,
+        fb_ids,
+        maps,
+        front: 0,
         fb_id,
         pitch,
         fb,
