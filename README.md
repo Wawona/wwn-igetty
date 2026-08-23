@@ -36,6 +36,13 @@ Text VTs (every number 1-6 except the GUI VT) run `igetty` (Doorman). Switch
 with Ctrl+Option+F1-F6 (Option is Alt). Overlay KMS clients: F7 kmscube, F8
 gbm-es2-demo, F9 vkcube-kms. Ctrl+Option+Backspace restores Aqua.
 
+Text drawing matches Linux `fbcon` on a mapped scanout buffer: damage rects
+(`fbcon_putcs`), pixel copy on scroll (`fbcon_bmove`), fillrect for blanks
+(`fbcon_clear`), and a 200ms block cursor that inverts one cell
+(`fbcon_cursor` / `fbcon_flashcursor`). Classic Take Over still pageflips the
+same iland BO so CoreDisplay sees the dirty pixels. It does not re-raster the
+whole VT on blink.
+
 Auth: [Doorman](https://github.com/Wawona/doorman) as a library. Do not call
 `doorman_open_session()` (that forks/setsid off the PTY).
 

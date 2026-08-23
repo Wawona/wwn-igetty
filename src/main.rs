@@ -1,5 +1,10 @@
 //! wwn-igetty: Linux-shaped VTs on iland DRM after WindowServer is gone.
-//! Draw: paint every cell, overlay cursor, one flip. GUI VT is assigned, not hardcoded.
+//!
+//! Text update follows Linux `fbcon`, not a full-screen compositor redraw:
+//! `fbcon_putcs` / damage rects, `fbcon_bmove` pixel copy on scroll,
+//! `fbcon_clear` fill for blank cells, `fbcon_cursor` invert one cell at 200ms.
+//! Present is still an iland pageflip of the same BO so CoreDisplay picks up
+//! the dirty pixels (Classic has no WindowServer).
 #![allow(dead_code)]
 #![allow(clippy::missing_safety_doc)]
 
@@ -20,6 +25,8 @@ const BASE0B: u32 = 0xFF00_9985;
 const MODEB_MAX_OUTPUTS: usize = 8;
 const VT_FILE: &str = "/tmp/libwayland-support/modeb-vt";
 const DRM_MODE_CONNECTED: u32 = 1;
+/// Linux `vc_cur_blink_ms` / fbcon flash timer default.
+const CURSOR_BLINK_MS: i64 = 200;
 
 static RUN: AtomicBool = AtomicBool::new(true);
 static ACTIVE_VT: AtomicI32 = AtomicI32::new(1);
@@ -48,7 +55,18 @@ struct Vt {
     screen: *mut c_void,
     cols: i32,
     rows: i32,
-    dirty: bool,
+    /// Union of libvterm damage (end exclusive). `fbcon_putcs` region.
+    has_damage: bool,
+    full_redraw: bool,
+    dmg_start_row: i32,
+    dmg_end_row: i32,
+    dmg_start_col: i32,
+    dmg_end_col: i32,
+    /// Last software-cursor cell (`fbcon_cursor` CM_ERASE/CM_DRAW).
+    cur_row: i32,
+    cur_col: i32,
+    cur_drawn: bool,
+    cursor_moved: bool,
 }
 
 struct OverlayClient {
@@ -342,21 +360,31 @@ pub extern "C" fn modeb_rs_should_run() -> i32 {
     RUN.load(Ordering::SeqCst) as i32
 }
 
-extern "C" fn screen_damage(_r: VTermRect, user: *mut c_void) -> i32 {
+extern "C" fn screen_damage(r: VTermRect, user: *mut c_void) -> i32 {
     unsafe {
-        (*(user as *mut Vt)).dirty = true;
+        vt_union_damage(&mut *(user as *mut Vt), r);
     }
     1
 }
-extern "C" fn screen_moverect(_d: VTermRect, _s: VTermRect, user: *mut c_void) -> i32 {
+extern "C" fn screen_moverect(dest: VTermRect, src: VTermRect, user: *mut c_void) -> i32 {
     unsafe {
-        (*(user as *mut Vt)).dirty = true;
+        let v = &mut *(user as *mut Vt);
+        /* fbcon_bmove: copy scanout pixels, do not re-raster the scroll. */
+        if !APP.is_null() {
+            let app = app_mut();
+            cursor_erase(&app.outs, app.cell_w, app.cell_h, v);
+            copy_vt_rect(app, v, dest, src);
+            v.cursor_moved = true;
+        } else {
+            vt_union_damage(v, dest);
+        }
     }
     1
 }
 extern "C" fn screen_movecursor(_p: VTermPos, _o: VTermPos, _v: i32, user: *mut c_void) -> i32 {
+    /* fbcon_cursor CM_MOVE: one cell, not a full VT dirty. */
     unsafe {
-        (*(user as *mut Vt)).dirty = true;
+        (*(user as *mut Vt)).cursor_moved = true;
     }
     1
 }
@@ -399,15 +427,137 @@ fn rgb_bgra(r: u8, g: u8, b: u8) -> u32 {
     0xFF000000 | ((b as u32) << 16) | ((g as u32) << 8) | (r as u32)
 }
 
-unsafe fn fill_fb(o: &Output, color: u32) {
+fn vt_union_damage(v: &mut Vt, r: VTermRect) {
+    if r.end_row <= r.start_row || r.end_col <= r.start_col {
+        return;
+    }
+    if !v.has_damage {
+        v.dmg_start_row = r.start_row;
+        v.dmg_end_row = r.end_row;
+        v.dmg_start_col = r.start_col;
+        v.dmg_end_col = r.end_col;
+        v.has_damage = true;
+        return;
+    }
+    if r.start_row < v.dmg_start_row {
+        v.dmg_start_row = r.start_row;
+    }
+    if r.end_row > v.dmg_end_row {
+        v.dmg_end_row = r.end_row;
+    }
+    if r.start_col < v.dmg_start_col {
+        v.dmg_start_col = r.start_col;
+    }
+    if r.end_col > v.dmg_end_col {
+        v.dmg_end_col = r.end_col;
+    }
+}
+
+fn vt_mark_full(v: &mut Vt) {
+    v.full_redraw = true;
+    v.has_damage = true;
+    v.dmg_start_row = 0;
+    v.dmg_end_row = v.rows;
+    v.dmg_start_col = 0;
+    v.dmg_end_col = v.cols;
+}
+
+unsafe fn fill_rect(o: &Output, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
     if o.fb.is_null() {
         return;
     }
-    let pitch_px = (o.pitch / 4) as isize;
-    for y in 0..o.h as isize {
-        let row = o.fb.offset(y * pitch_px);
-        for x in 0..o.w as isize {
-            *row.offset(x) = color;
+    let pitch_px = (o.pitch / 4) as i32;
+    let x0 = x0.max(0);
+    let y0 = y0.max(0);
+    let x1 = x1.min(o.w);
+    let y1 = y1.min(o.h);
+    for y in y0..y1 {
+        let row = o.fb.offset((y * pitch_px) as isize);
+        for x in x0..x1 {
+            *row.offset(x as isize) = color;
+        }
+    }
+}
+
+unsafe fn fill_fb(o: &Output, color: u32) {
+    fill_rect(o, 0, 0, o.w, o.h, color);
+}
+
+unsafe fn invert_rect(o: &Output, x0: i32, y0: i32, x1: i32, y1: i32) {
+    if o.fb.is_null() {
+        return;
+    }
+    let pitch_px = (o.pitch / 4) as i32;
+    let x0 = x0.max(0);
+    let y0 = y0.max(0);
+    let x1 = x1.min(o.w);
+    let y1 = y1.min(o.h);
+    for y in y0..y1 {
+        let row = o.fb.offset((y * pitch_px) as isize);
+        for x in x0..x1 {
+            let p = row.offset(x as isize);
+            *p = (*p & 0xFF000000) | ((*p & 0x00FFFFFF) ^ 0x00FFFFFF);
+        }
+    }
+}
+
+unsafe fn copy_vt_rect(app: &App, _v: &Vt, dest: VTermRect, src: VTermRect) {
+    let cw = app.cell_w;
+    let ch = app.cell_h;
+    if cw <= 0 || ch <= 0 {
+        return;
+    }
+    let rows = dest.end_row - dest.start_row;
+    let cols = dest.end_col - dest.start_col;
+    if rows <= 0 || cols <= 0 {
+        return;
+    }
+    if src.end_row - src.start_row != rows || src.end_col - src.start_col != cols {
+        return;
+    }
+    let bw = (cols * cw) as usize;
+    let bh = (rows * ch) as usize;
+    if bw == 0 || bh == 0 {
+        return;
+    }
+    for o in &app.outs {
+        if o.fb.is_null() {
+            continue;
+        }
+        let pitch = (o.pitch / 4) as usize;
+        let sx = src.start_col * cw;
+        let sy = src.start_row * ch;
+        let dx = dest.start_col * cw;
+        let dy = dest.start_row * ch;
+        if sx < 0 || sy < 0 || dx < 0 || dy < 0 {
+            continue;
+        }
+        let mut tmp = vec![0u32; bw * bh];
+        for y in 0..bh {
+            let fy = sy as usize + y;
+            if fy >= o.h as usize {
+                break;
+            }
+            let src_row = o.fb.add(fy * pitch).add(sx as usize);
+            for x in 0..bw {
+                if sx as usize + x >= o.w as usize {
+                    break;
+                }
+                tmp[y * bw + x] = *src_row.add(x);
+            }
+        }
+        for y in 0..bh {
+            let fy = dy as usize + y;
+            if fy >= o.h as usize {
+                break;
+            }
+            let dst_row = o.fb.add(fy * pitch).add(dx as usize);
+            for x in 0..bw {
+                if dx as usize + x >= o.w as usize {
+                    break;
+                }
+                *dst_row.add(x) = tmp[y * bw + x];
+            }
         }
     }
 }
@@ -451,7 +601,7 @@ unsafe fn bind_text_crtcs(app: &App) {
     }
 }
 
-unsafe fn draw_cell(app: &App, o: &Output, v: &Vt, row: i32, col: i32) {
+unsafe fn draw_cell(cell_w: i32, cell_h: i32, o: &Output, v: &Vt, row: i32, col: i32) {
     let mut cp = 0u32;
     let mut reverse = 0i32;
     let mut bold = 0i32;
@@ -479,34 +629,39 @@ unsafe fn draw_cell(app: &App, o: &Output, v: &Vt, row: i32, col: i32) {
         let bump = |c: u8| -> u8 { if c > 200 { 255 } else { c.saturating_add(55) } };
         fgc = rgb_bgra(bump(fg[0]), bump(fg[1]), bump(fg[2]));
     }
-    let px = col * app.cell_w;
-    let py = row * app.cell_h;
+    let px = col * cell_w;
+    let py = row * cell_h;
+    /* fbcon_clear: blank cells are a fillrect, not a glyph raster. */
+    if cp == 0 || cp == b' ' as u32 {
+        fill_rect(o, px, py, px + cell_w, py + cell_h, bgc);
+        return;
+    }
     if modeb_ctfont_ready() != 0 {
         modeb_ctfont_blit(o.fb, o.pitch, o.w, o.h, px, py, cp, fgc, bgc);
     }
 }
 
-unsafe fn draw_vt_label(app: &App, o: &Output, vt: i32) {
-    if modeb_ctfont_ready() == 0 || app.cell_w <= 0 {
+unsafe fn draw_vt_label(cell_w: i32, cell_h: i32, o: &Output, vt: i32) {
+    if modeb_ctfont_ready() == 0 || cell_w <= 0 {
         return;
     }
     let label = format!("tty{:02}", vt);
     let fg = BASE0B;
     let bg = rgb_bgra(0x10, 0x10, 0x10);
     let chars: Vec<u32> = label.chars().map(|c| c as u32).collect();
-    let w = chars.len() as i32 * app.cell_w;
-    let mut px = o.w - w - app.cell_w;
+    let w = chars.len() as i32 * cell_w;
+    let mut px = o.w - w - cell_w;
     if px < 0 {
         px = 0;
     }
-    let py = app.cell_h / 4;
+    let py = cell_h / 4;
     for (i, cp) in chars.iter().enumerate() {
         modeb_ctfont_blit(
             o.fb,
             o.pitch,
             o.w,
             o.h,
-            px + i as i32 * app.cell_w,
+            px + i as i32 * cell_w,
             py,
             *cp,
             fg,
@@ -515,9 +670,9 @@ unsafe fn draw_vt_label(app: &App, o: &Output, vt: i32) {
     }
 }
 
-unsafe fn overlay_cursor(app: &App, o: &Output, v: &Vt) {
-    if !CURSOR_ON.load(Ordering::Relaxed) || v.vt.is_null() {
-        return;
+unsafe fn cursor_pos(v: &Vt) -> Option<(i32, i32)> {
+    if v.vt.is_null() {
+        return None;
     }
     let st = vterm_obtain_state(v.vt);
     let mut cur = VTermPos { row: 0, col: 0 };
@@ -525,49 +680,112 @@ unsafe fn overlay_cursor(app: &App, o: &Output, v: &Vt) {
         vterm_state_get_cursorpos(st, &mut cur);
     }
     if cur.row < 0 || cur.row >= v.rows || cur.col < 0 || cur.col >= v.cols {
+        return None;
+    }
+    Some((cur.row, cur.col))
+}
+
+unsafe fn cursor_erase(outs: &[Output], cell_w: i32, cell_h: i32, v: &mut Vt) {
+    if !v.cur_drawn {
         return;
     }
-    let px = cur.col * app.cell_w;
-    let py = cur.row * app.cell_h;
-    let pitch_px = (o.pitch / 4) as i32;
-    let block = 0xFFE8E8E8u32;
-    for y in 0..app.cell_h {
-        let Y = py + y;
-        if Y < 0 || Y >= o.h {
-            continue;
-        }
-        for x in 0..app.cell_w {
-            let X = px + x;
-            if X < 0 || X >= o.w {
-                continue;
+    let row = v.cur_row;
+    let col = v.cur_col;
+    for o in outs {
+        draw_cell(cell_w, cell_h, o, v, row, col);
+    }
+    v.cur_drawn = false;
+}
+
+unsafe fn cursor_draw(outs: &[Output], cell_w: i32, cell_h: i32, v: &mut Vt) {
+    if !CURSOR_ON.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some((row, col)) = cursor_pos(v) else {
+        return;
+    };
+    for o in outs {
+        draw_cell(cell_w, cell_h, o, v, row, col);
+        invert_rect(
+            o,
+            col * cell_w,
+            row * cell_h,
+            col * cell_w + cell_w,
+            row * cell_h + cell_h,
+        );
+    }
+    v.cur_row = row;
+    v.cur_col = col;
+    v.cur_drawn = true;
+}
+
+/// Linux `fbcon_flashcursor`: invert one cell. No full-VT raster.
+unsafe fn paint_cursor_only(app: &mut App) {
+    let av = ACTIVE_VT.load(Ordering::SeqCst);
+    if av < 1 || av > VT_TEXT_COUNT as i32 || is_gui_vt(av) {
+        return;
+    }
+    let idx = (av - 1) as usize;
+    if app.vts[idx].screen.is_null() {
+        return;
+    }
+    {
+        let v = &mut app.vts[idx];
+        cursor_erase(&app.outs, app.cell_w, app.cell_h, v);
+        cursor_draw(&app.outs, app.cell_w, app.cell_h, v);
+        v.cursor_moved = false;
+    }
+    present(app);
+}
+
+unsafe fn paint_damage(outs: &[Output], cell_w: i32, cell_h: i32, v: &Vt, vt_num: i32) {
+    let sr = v.dmg_start_row.max(0);
+    let er = v.dmg_end_row.min(v.rows);
+    let sc = v.dmg_start_col.max(0);
+    let ec = v.dmg_end_col.min(v.cols);
+    for o in outs {
+        for row in sr..er {
+            for col in sc..ec {
+                draw_cell(cell_w, cell_h, o, v, row, col);
             }
-            *o.fb.offset((Y * pitch_px + X) as isize) = block;
         }
+        draw_vt_label(cell_w, cell_h, o, vt_num);
     }
 }
 
+/// Linux fbcon update: damage rect (or full refresh on VT switch), then cursor.
 unsafe fn render_active_text(app: &mut App) {
     let av = ACTIVE_VT.load(Ordering::SeqCst);
     if av < 1 || av > VT_TEXT_COUNT as i32 {
         return;
     }
     let idx = (av - 1) as usize;
-    let v = &app.vts[idx];
-    if v.screen.is_null() {
+    if app.vts[idx].screen.is_null() {
         return;
     }
-    for oi in 0..app.outs.len() {
-        let o = &app.outs[oi];
-        for row in 0..v.rows {
-            for col in 0..v.cols {
-                draw_cell(app, o, v, row, col);
+    {
+        let v = &mut app.vts[idx];
+        cursor_erase(&app.outs, app.cell_w, app.cell_h, v);
+        if v.full_redraw {
+            let bg = rgb_bgra(0x10, 0x10, 0x10);
+            for o in &app.outs {
+                fill_fb(o, bg);
             }
+            v.dmg_start_row = 0;
+            v.dmg_end_row = v.rows;
+            v.dmg_start_col = 0;
+            v.dmg_end_col = v.cols;
+            v.has_damage = true;
+            v.full_redraw = false;
         }
-        overlay_cursor(app, o, v);
-        draw_vt_label(app, o, av);
+        if v.has_damage {
+            paint_damage(&app.outs, app.cell_w, app.cell_h, v, av);
+            v.has_damage = false;
+        }
+        cursor_draw(&app.outs, app.cell_w, app.cell_h, v);
+        v.cursor_moved = false;
     }
     present(app);
-    app.vts[idx].dirty = false;
 }
 
 unsafe fn add_output(app: &mut App, res: *mut DrmModeRes, conn: *mut DrmModeConnector, mut used: u32) -> u32 {
@@ -788,7 +1006,16 @@ unsafe fn vt_init(getty: &str, cell_w: i32, cell_h: i32, v: &mut Vt, cols: i32, 
         screen: ptr::null_mut(),
         cols,
         rows,
-        dirty: true,
+        has_damage: true,
+        full_redraw: true,
+        dmg_start_row: 0,
+        dmg_end_row: rows,
+        dmg_start_col: 0,
+        dmg_end_col: cols,
+        cur_row: 0,
+        cur_col: 0,
+        cur_drawn: false,
+        cursor_moved: false,
     };
     v.vt = vterm_new(rows, cols);
     if v.vt.is_null() {
@@ -1079,7 +1306,8 @@ unsafe fn switch_vt(app: &mut App, vt: i32) {
     }
     ACTIVE_VT.store(vt, Ordering::SeqCst);
     bind_text_crtcs(app);
-    app.vts[(vt - 1) as usize].dirty = true;
+    vt_mark_full(&mut app.vts[(vt - 1) as usize]);
+    app.vts[(vt - 1) as usize].cur_drawn = false;
     render_active_text(app);
 }
 
@@ -1319,7 +1547,16 @@ fn empty_vt() -> Vt {
         screen: ptr::null_mut(),
         cols: 0,
         rows: 0,
-        dirty: true,
+        has_damage: false,
+        full_redraw: false,
+        dmg_start_row: 0,
+        dmg_end_row: 0,
+        dmg_start_col: 0,
+        dmg_end_col: 0,
+        cur_row: 0,
+        cur_col: 0,
+        cur_drawn: false,
+        cursor_moved: false,
     }
 }
 
@@ -1445,13 +1682,10 @@ Ctrl+Option+Backspace restores Aqua. (MacBook: hold Fn for F-keys if needed)\r\n
             };
             clock_gettime(CLOCK_MONOTONIC, &mut ts);
             let ms = ts.tv_sec * 1000 + ts.tv_nsec / 1_000_000;
-            let on = ((ms / 530) & 1) != 0;
+            let on = ((ms / CURSOR_BLINK_MS) & 1) != 0;
             if on != CURSOR_ON.load(Ordering::Relaxed) {
                 CURSOR_ON.store(on, Ordering::Relaxed);
-                let av = ACTIVE_VT.load(Ordering::SeqCst);
-                if (1..=VT_TEXT_COUNT as i32).contains(&av) && !is_gui_vt(av) {
-                    render_active_text(app);
-                }
+                paint_cursor_only(app);
             }
 
             let mut pfd = [Pollfd {
@@ -1495,7 +1729,8 @@ Ctrl+Option+Backspace restores Aqua. (MacBook: hold Fn for F-keys if needed)\r\n
                     app.vts[i].shell_pid = -1;
                     if !app.vts[i].vt.is_null() {
                         vterm_screen_reset(app.vts[i].screen, 1);
-                        app.vts[i].dirty = true;
+                        vt_mark_full(&mut app.vts[i]);
+                        app.vts[i].cur_drawn = false;
                     }
                     let getty = app.getty.clone();
                     let cw = app.cell_w;
@@ -1505,8 +1740,14 @@ Ctrl+Option+Backspace restores Aqua. (MacBook: hold Fn for F-keys if needed)\r\n
             }
 
             let av = ACTIVE_VT.load(Ordering::SeqCst);
-            if (1..=VT_TEXT_COUNT as i32).contains(&av) && !is_gui_vt(av) && app.vts[(av - 1) as usize].dirty {
-                render_active_text(app);
+            if (1..=VT_TEXT_COUNT as i32).contains(&av) && !is_gui_vt(av) {
+                let v = &app.vts[(av - 1) as usize];
+                if v.has_damage || v.full_redraw {
+                    render_active_text(app);
+                } else if v.cursor_moved {
+                    paint_cursor_only(app);
+                    app.vts[(av - 1) as usize].cursor_moved = false;
+                }
             }
 
             if app.gfx_pid > 0 {
