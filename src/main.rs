@@ -3,8 +3,9 @@
 //! Text update follows Linux `fbcon`, not a full-screen compositor redraw:
 //! `fbcon_putcs` / damage rects, `fbcon_bmove` pixel copy on scroll,
 //! `fbcon_clear` fill for blank cells, `fbcon_cursor` invert one cell at 200ms.
-//! Present is still an iland pageflip of the same BO so CoreDisplay picks up
-//! the dirty pixels (Classic has no WindowServer).
+//! Present is an iland pageflip. framebufferd bounce-copies a dumb BO that
+//! is flipped in place, because CoreDisplay ignores presentSurface of the
+//! same IOSurface object (Classic has no WindowServer).
 #![allow(dead_code)]
 #![allow(clippy::missing_safety_doc)]
 
@@ -257,6 +258,7 @@ extern "C" {
     fn vterm_obtain_screen(vt: *mut c_void) -> *mut c_void;
     fn vterm_obtain_state(vt: *mut c_void) -> *mut c_void;
     fn vterm_input_write(vt: *mut c_void, bytes: *const u8, len: usize) -> usize;
+    fn vterm_output_read(vt: *mut c_void, buffer: *mut u8, len: usize) -> usize;
     fn vterm_screen_set_callbacks(
         screen: *mut c_void,
         cbs: *const VTermScreenCallbacks,
@@ -964,9 +966,11 @@ unsafe fn spawn_getty(getty: &str, cell_w: i32, cell_h: i32, v: &mut Vt) -> i32 
         if s > 2 {
             close(s);
         }
+        /* libvterm is xterm-shaped. TERM=linux has no DA/DSR that yazi and
+         * zsh prompt drawing wait on, so the PTY looks broken. */
         let term = CString::new("TERM").unwrap();
-        let linux = CString::new("linux").unwrap();
-        setenv(term.as_ptr(), linux.as_ptr(), 1);
+        let xt = CString::new("xterm-256color").unwrap();
+        setenv(term.as_ptr(), xt.as_ptr(), 1);
         let ct = CString::new("COLORTERM").unwrap();
         let tc = CString::new("truecolor").unwrap();
         setenv(ct.as_ptr(), tc.as_ptr(), 1);
@@ -1037,12 +1041,29 @@ unsafe fn vt_init(getty: &str, cell_w: i32, cell_h: i32, v: &mut Vt, cols: i32, 
     spawn_getty(getty, cell_w, cell_h, v)
 }
 
+unsafe fn vt_drain_output(v: &Vt) {
+    if v.vt.is_null() || v.master < 0 {
+        return;
+    }
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = vterm_output_read(v.vt, buf.as_mut_ptr(), buf.len());
+        if n == 0 {
+            break;
+        }
+        write(v.master, buf.as_ptr(), n);
+    }
+}
+
 unsafe fn vt_feed(v: &mut Vt, buf: &[u8]) {
     if v.vt.is_null() || buf.is_empty() {
         return;
     }
     vterm_input_write(v.vt, buf.as_ptr(), buf.len());
     vterm_screen_flush_damage(v.screen);
+    /* DA / DSR / cursor reports must go back to the child or yazi/zsh
+     * decide the terminal is broken and skip drawing. */
+    vt_drain_output(v);
 }
 
 fn key_to_ascii(key: i32, shift: bool) -> u8 {
@@ -1754,7 +1775,9 @@ Ctrl+Option+Backspace restores Aqua. (MacBook: hold Fn for F-keys if needed)\r\n
                 let mut st = 0;
                 let r = waitpid(app.gfx_pid, &mut st, WNOHANG);
                 if r == app.gfx_pid {
-                    eprint("[igettyd] graphics client exited\n");
+                    eprint(&format!(
+                        "[igettyd] graphics client exited status={st}\n"
+                    ));
                     app.gfx_pid = -1;
                     let av = ACTIVE_VT.load(Ordering::SeqCst);
                     if is_gui_vt(av) || is_kms_vt(av) {

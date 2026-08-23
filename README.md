@@ -39,9 +39,11 @@ gbm-es2-demo, F9 vkcube-kms. Ctrl+Option+Backspace restores Aqua.
 Text drawing matches Linux `fbcon` on a mapped scanout buffer: damage rects
 (`fbcon_putcs`), pixel copy on scroll (`fbcon_bmove`), fillrect for blanks
 (`fbcon_clear`), and a 200ms block cursor that inverts one cell
-(`fbcon_cursor` / `fbcon_flashcursor`). Classic Take Over still pageflips the
-same iland BO so CoreDisplay sees the dirty pixels. It does not re-raster the
-whole VT on blink.
+(`fbcon_cursor` / `fbcon_flashcursor`). igettyd pageflips that dumb BO.
+framebufferd bounce-copies when the IOSurface id repeats, because
+`presentSurface` of the same object is a CoreDisplay no-op. Child sessions
+get `TERM=xterm-256color` (libvterm is xterm-shaped) and DA/DSR replies
+are written back to the PTY.
 
 Auth: [Doorman](https://github.com/Wawona/doorman) as a library. Do not call
 `doorman_open_session()` (that forks/setsid off the PTY).
