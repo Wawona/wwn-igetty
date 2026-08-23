@@ -1032,6 +1032,7 @@ unsafe fn spawn_getty(getty: &str, cell_w: i32, cell_h: i32, v: &mut Vt) -> i32 
         let mt = CString::new("WWN_MODEB_TTY").unwrap();
         let one = CString::new("1").unwrap();
         setenv(mt.as_ptr(), one.as_ptr(), 1);
+        child_modeb_login_env();
         if !getty.is_empty() {
             let p = CString::new(getty).unwrap();
             let a = CString::new("igetty").unwrap();
@@ -1277,6 +1278,54 @@ unsafe fn child_clear_nested_wayland() {
     }
 }
 
+fn session_bin_dir() -> Option<String> {
+    if let Some(e) = env_str("WWN_MODEB_SESSION_BIN") {
+        if std::path::Path::new(&e).is_dir() {
+            return Some(e);
+        }
+    }
+    let dir = executable_dir()?;
+    let parent = std::path::Path::new(&dir);
+    for rel in [
+        "../libexec/wwn-modeb-session",
+        "../Resources/libexec/wwn-modeb-session",
+        "wwn-modeb-session",
+    ] {
+        let cand = parent.join(rel);
+        if cand.is_dir() {
+            return Some(cand.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+unsafe fn child_modeb_compositor_env() {
+    child_clear_nested_wayland();
+    let nb = CString::new("NIRI_BACKEND").unwrap();
+    let tty = CString::new("tty").unwrap();
+    setenv(nb.as_ptr(), tty.as_ptr(), 1);
+    let mt = CString::new("WWN_MODEB_TTY").unwrap();
+    let one = CString::new("1").unwrap();
+    setenv(mt.as_ptr(), one.as_ptr(), 1);
+}
+
+unsafe fn child_modeb_login_env() {
+    child_modeb_compositor_env();
+    if let Some(session) = session_bin_dir() {
+        let sk = CString::new("WWN_MODEB_SESSION_BIN").unwrap();
+        let sv = CString::new(session.as_str()).unwrap();
+        setenv(sk.as_ptr(), sv.as_ptr(), 0);
+        let rest = env_str("PATH").unwrap_or_else(|| {
+            "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".into()
+        });
+        if !rest.split(':').any(|p| p == session) {
+            let pk = CString::new("PATH").unwrap();
+            let pv = CString::new(format!("{session}:{rest}")).unwrap();
+            setenv(pk.as_ptr(), pv.as_ptr(), 1);
+        }
+    }
+}
+
 unsafe fn start_graphics(app: &mut App) {
     if app.gfx_pid > 0 {
         return;
@@ -1289,10 +1338,7 @@ unsafe fn start_graphics(app: &mut App) {
     if pid == 0 {
         /* Mode B Classic has no host Wayland display. Weston/niri keep their
          * nested backends for Mode A Machines Start. This child is own-display. */
-        child_clear_nested_wayland();
-        let nb = CString::new("NIRI_BACKEND").unwrap();
-        let tty = CString::new("tty").unwrap();
-        setenv(nb.as_ptr(), tty.as_ptr(), 1);
+        child_modeb_compositor_env();
         if app.drm_fd >= 0 {
             close(app.drm_fd);
         }
@@ -1751,7 +1797,7 @@ fn main() {
 
         let banner = b"\r\nwwn-igetty (Doorman login + Linux-shaped VTs)\r\n\
 Ctrl+Option+F1-F6 switch VTs. Assigned GUI VT runs the Desktop machine.\r\n\
-Weston/niri on that VT use their DRM backend (no host Wayland after Take Over).\r\n\
+Weston/niri use iland DRM/KMS/GBM (no host Wayland after Take Over).\r\n\
 Ctrl+Option+F7 kmscube. F8 gbm-es2-demo. F9 vkcube-kms.\r\n\
 Ctrl+Option+Backspace restores Aqua. (MacBook: hold Fn for F-keys if needed)\r\n\r\n";
         let text0 = first_text_vt();

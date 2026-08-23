@@ -14,6 +14,10 @@ Weston and niri are **not** DRM-only. Machines Start still nests them
 (`--backend=wayland` / `NIRI_BACKEND=nested`) when Display Backend is Wayland.
 After Classic Take Over there is no host Wayland, so the GUI VT uses each
 compositor's own DRM/KMS/GBM backend (`--backend=drm` / `NIRI_BACKEND=tty`).
+Typing `niri` or `weston` on a Doorman text VT does the same: login env sets
+`NIRI_BACKEND=tty`, clears nested `WAYLAND_DISPLAY`, and PATH wrappers restore
+`DYLD_INSERT_LIBRARIES` from `WWN_MODEB_INSERT` then exec the bundled binary
+on iland DRM. Do not nest. Mode A Machines Start is unchanged.
 
 The GUI session is **assigned a VT**. It is not hardcoded as VT1. Linux often
 puts GDM on `/dev/tty1`, but a display manager can pick another number.

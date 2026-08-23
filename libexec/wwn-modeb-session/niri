@@ -1,0 +1,24 @@
+#!/bin/sh
+# Mode B TTY: niri is the session compositor on iland DRM/KMS/GBM.
+# After Classic Take Over there is no host Wayland. Do not nest.
+unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
+export NIRI_BACKEND=tty
+export WWN_MODEB_TTY=1
+if [ -n "${WWN_MODEB_INSERT-}" ]; then
+  export DYLD_INSERT_LIBRARIES="$WWN_MODEB_INSERT"
+fi
+real="${WWN_MODEB_NIRI-}"
+if [ -z "$real" ] && [ -n "${WWN_MODEB_BIN-}" ]; then
+  real="$WWN_MODEB_BIN/niri"
+fi
+case "$real" in
+  */wwn-modeb-session/niri)
+    echo "modeb niri: WWN_MODEB_NIRI points at the session wrapper" >&2
+    exit 127
+    ;;
+esac
+if [ -z "$real" ] || [ ! -x "$real" ]; then
+  echo "modeb niri: set WWN_MODEB_NIRI to the bundled niri" >&2
+  exit 127
+fi
+exec "$real" "$@"

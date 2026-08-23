@@ -84,10 +84,12 @@ pkgs.stdenv.mkDerivation {
   '';
 
   installPhase = ''
-    mkdir -p $out/bin
+    mkdir -p $out/bin $out/libexec/wwn-modeb-session
     cp igettyd igetty $out/bin/
     ln -sf igettyd $out/bin/modeb-ttyd
     ln -sf igetty $out/bin/modeb-getty
+    install -m 755 libexec/wwn-modeb-session/niri $out/libexec/wwn-modeb-session/niri
+    install -m 755 libexec/wwn-modeb-session/weston $out/libexec/wwn-modeb-session/weston
   '';
 
   meta = with lib; {

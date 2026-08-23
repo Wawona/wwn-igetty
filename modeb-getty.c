@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <grp.h>
+#include <mach-o/dyld.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,47 @@
 #include <unistd.h>
 
 #include <doorman.h>
+
+static void resolve_session_bin(char *out, size_t cap) {
+  const char *env = getenv("WWN_MODEB_SESSION_BIN");
+  if (env && env[0]) {
+    snprintf(out, cap, "%s", env);
+    return;
+  }
+  char exe[1024];
+  uint32_t sz = sizeof(exe);
+  if (_NSGetExecutablePath(exe, &sz) != 0) {
+    out[0] = '\0';
+    return;
+  }
+  char *slash = strrchr(exe, '/');
+  if (!slash) {
+    out[0] = '\0';
+    return;
+  }
+  *slash = '\0';
+  snprintf(out, cap, "%s/../libexec/wwn-modeb-session", exe);
+  if (access(out, X_OK) == 0)
+    return;
+  snprintf(out, cap, "%s/../Resources/libexec/wwn-modeb-session", exe);
+  if (access(out, X_OK) == 0)
+    return;
+  out[0] = '\0';
+}
+
+/* Classic Take Over has no host Wayland. Typed niri/weston use iland DRM. */
+static void apply_modeb_compositor_env(void) {
+  unsetenv("WAYLAND_DISPLAY");
+  unsetenv("WAYLAND_SOCKET");
+  unsetenv("DISPLAY");
+  setenv("NIRI_BACKEND", "tty", 1);
+  setenv("WWN_MODEB_TTY", "1", 1);
+
+  char session[1024];
+  resolve_session_bin(session, sizeof(session));
+  if (session[0])
+    setenv("WWN_MODEB_SESSION_BIN", session, 0);
+}
 
 static char *read_line(const char *prompt, int echo) {
   if (prompt) {
@@ -115,7 +157,7 @@ static int drop_and_exec_shell(const doorman_user_t *u) {
   setenv("SHELL", shell, 1);
   setenv("TERM", "linux", 1);
   setenv("COLORTERM", "truecolor", 1);
-  setenv("WWN_MODEB_TTY", "1", 1);
+  apply_modeb_compositor_env();
   {
     const char *ins = getenv("DYLD_INSERT_LIBRARIES");
     if (ins && ins[0] && !getenv("WWN_MODEB_INSERT"))
@@ -124,14 +166,18 @@ static int drop_and_exec_shell(const doorman_user_t *u) {
   }
   {
     char path[4096];
+    const char *session = getenv("WWN_MODEB_SESSION_BIN");
     const char *bin = getenv("WWN_MODEB_BIN");
-    if (bin && bin[0])
-      snprintf(path, sizeof(path),
-               "%s:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
-               bin);
+    const char *rest =
+        "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin";
+    if (session && session[0] && bin && bin[0])
+      snprintf(path, sizeof(path), "%s:%s:%s", session, bin, rest);
+    else if (session && session[0])
+      snprintf(path, sizeof(path), "%s:%s", session, rest);
+    else if (bin && bin[0])
+      snprintf(path, sizeof(path), "%s:%s", bin, rest);
     else
-      snprintf(path, sizeof(path),
-               "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin");
+      snprintf(path, sizeof(path), "%s", rest);
     setenv("PATH", path, 1);
   }
   setenv("XDG_SESSION_TYPE", "tty", 1);
