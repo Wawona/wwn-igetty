@@ -42,8 +42,10 @@ Text drawing matches Linux `fbcon` on a mapped scanout buffer: damage rects
 (`fbcon_cursor` / `fbcon_flashcursor`). igettyd ping-pongs two dumb BOs and
 pageflips. CoreDisplay ignores `presentSurface` of the same IOSurface, which
 is why F7 kmscube then F1 showed a live TTY and in-place flips did not.
-Child sessions get `TERM=xterm-256color` (libvterm is xterm-shaped) and
-DA/DSR replies are written back to the PTY.
+vterm callbacks use a VT index, not `&Vt`. `App` is boxed after
+`vt_init`, so a `&Vt` from the stack `App` would dangle and Doorman
+login text would never dirty the live VTs (F7 then F1 looked fine
+because a VT switch forces `full_redraw`).
 
 Auth: [Doorman](https://github.com/Wawona/doorman) as a library. Do not call
 `doorman_open_session()` (that forks/setsid off the PTY).

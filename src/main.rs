@@ -367,31 +367,46 @@ pub extern "C" fn modeb_rs_should_run() -> i32 {
     RUN.load(Ordering::SeqCst) as i32
 }
 
-extern "C" fn screen_damage(r: VTermRect, user: *mut c_void) -> i32 {
+fn vt_from_cb(user: *mut c_void) -> Option<&'static mut Vt> {
     unsafe {
-        vt_union_damage(&mut *(user as *mut Vt), r);
+        if APP.is_null() {
+            return None;
+        }
+        let idx = user as usize;
+        if idx >= VT_TEXT_COUNT {
+            return None;
+        }
+        Some(&mut app_mut().vts[idx])
+    }
+}
+
+extern "C" fn screen_damage(r: VTermRect, user: *mut c_void) -> i32 {
+    if let Some(v) = vt_from_cb(user) {
+        vt_union_damage(v, r);
     }
     1
 }
 extern "C" fn screen_moverect(dest: VTermRect, src: VTermRect, user: *mut c_void) -> i32 {
+    /* fbcon_bmove: copy scanout pixels, do not re-raster the scroll. */
     unsafe {
-        let v = &mut *(user as *mut Vt);
-        /* fbcon_bmove: copy scanout pixels, do not re-raster the scroll. */
-        if !APP.is_null() {
-            let app = app_mut();
-            cursor_erase(&app.outs, app.cell_w, app.cell_h, v);
-            copy_vt_rect(app, v, dest, src);
-            v.cursor_moved = true;
-        } else {
-            vt_union_damage(v, dest);
+        if APP.is_null() {
+            return 1;
         }
+        let idx = user as usize;
+        if idx >= VT_TEXT_COUNT {
+            return 1;
+        }
+        let app = app_mut();
+        cursor_erase(&app.outs, app.cell_w, app.cell_h, &mut app.vts[idx]);
+        copy_vt_rect(app, dest, src);
+        app.vts[idx].cursor_moved = true;
     }
     1
 }
 extern "C" fn screen_movecursor(_p: VTermPos, _o: VTermPos, _v: i32, user: *mut c_void) -> i32 {
     /* fbcon_cursor CM_MOVE: one cell, not a full VT dirty. */
-    unsafe {
-        (*(user as *mut Vt)).cursor_moved = true;
+    if let Some(v) = vt_from_cb(user) {
+        v.cursor_moved = true;
     }
     1
 }
@@ -508,7 +523,7 @@ unsafe fn invert_rect(o: &Output, x0: i32, y0: i32, x1: i32, y1: i32) {
     }
 }
 
-unsafe fn copy_vt_rect(app: &App, _v: &Vt, dest: VTermRect, src: VTermRect) {
+unsafe fn copy_vt_rect(app: &App, dest: VTermRect, src: VTermRect) {
     let cw = app.cell_w;
     let ch = app.cell_h;
     if cw <= 0 || ch <= 0 {
@@ -1042,7 +1057,15 @@ fn libc_exit(code: i32) -> ! {
     unsafe { _exit(code) }
 }
 
-unsafe fn vt_init(getty: &str, cell_w: i32, cell_h: i32, v: &mut Vt, cols: i32, rows: i32) -> i32 {
+unsafe fn vt_init(
+    getty: &str,
+    cell_w: i32,
+    cell_h: i32,
+    idx: usize,
+    v: &mut Vt,
+    cols: i32,
+    rows: i32,
+) -> i32 {
     *v = Vt {
         master: -1,
         shell_pid: -1,
@@ -1067,7 +1090,8 @@ unsafe fn vt_init(getty: &str, cell_w: i32, cell_h: i32, v: &mut Vt, cols: i32, 
     }
     vterm_set_utf8(v.vt, 1);
     v.screen = vterm_obtain_screen(v.vt);
-    vterm_screen_set_callbacks(v.screen, &SCREEN_CBS, v as *mut Vt as *mut c_void);
+    /* User data is the VT index, not &Vt. &Vt would dangle after App is boxed. */
+    vterm_screen_set_callbacks(v.screen, &SCREEN_CBS, idx as *mut c_void);
     vterm_screen_set_damage_merge(v.screen, VTERM_DAMAGE_ROW);
     vterm_screen_enable_altscreen(v.screen, 1);
     let fg = VTermColor {
@@ -1104,6 +1128,9 @@ unsafe fn vt_feed(v: &mut Vt, buf: &[u8]) {
     /* DA / DSR / cursor reports must go back to the child or yazi/zsh
      * decide the terminal is broken and skip drawing. */
     vt_drain_output(v);
+    if !v.has_damage {
+        vt_mark_full(v);
+    }
 }
 
 fn key_to_ascii(key: i32, shift: bool) -> u8 {
@@ -1696,7 +1723,7 @@ fn main() {
             if (i as i32) + 1 == gui {
                 continue;
             }
-            if vt_init(&getty, cw, ch, &mut app.vts[i], cols, rows) != 0 {
+            if vt_init(&getty, cw, ch, i, &mut app.vts[i], cols, rows) != 0 {
                 eprint(&format!("[igettyd] VT{} init failed\n", i + 1));
                 std::process::exit(1);
             }
@@ -1704,6 +1731,16 @@ fn main() {
 
         APP = Box::into_raw(Box::new(app));
         let app = app_mut();
+        for i in 0..VT_TEXT_COUNT {
+            if app.vts[i].screen.is_null() {
+                continue;
+            }
+            vterm_screen_set_callbacks(
+                app.vts[i].screen,
+                &SCREEN_CBS,
+                i as *mut c_void,
+            );
+        }
 
         if modeb_input_subscribe() != 0 {
             eprint("[igettyd] FATAL: no inputd subscribe\n");
@@ -1746,7 +1783,13 @@ Ctrl+Option+Backspace restores Aqua. (MacBook: hold Fn for F-keys if needed)\r\n
             let on = ((ms / CURSOR_BLINK_MS) & 1) != 0;
             if on != CURSOR_ON.load(Ordering::Relaxed) {
                 CURSOR_ON.store(on, Ordering::Relaxed);
-                paint_cursor_only(app);
+                let av = ACTIVE_VT.load(Ordering::SeqCst);
+                let pending = (1..=VT_TEXT_COUNT as i32).contains(&av)
+                    && (app.vts[(av - 1) as usize].has_damage
+                        || app.vts[(av - 1) as usize].full_redraw);
+                if !pending {
+                    paint_cursor_only(app);
+                }
             }
 
             let mut pfd = [Pollfd {
