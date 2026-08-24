@@ -286,7 +286,7 @@ int main(int argc, char **argv) {
 
   printf("\nWawona Mode B TTY (Doorman login / Linux getty parity)\n"
          "Ctrl+Option+F1-F6 VT | F7 kmscube | F8 gbm-es2 | F9 vkcube-kms | "
-         "Ctrl+Option+Backspace Aqua\n");
+         "Ctrl+Option+Backspace or Fn+Ctrl+Option+Backspace Aqua\n");
   fflush(stdout);
 
   for (;;) {

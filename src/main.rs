@@ -1257,6 +1257,25 @@ fn key_to_ascii(key: i32, shift: bool) -> u8 {
     }
 }
 
+unsafe fn write_special_key(master: i32, key: i32) -> bool {
+    let seq: &[u8] = match key {
+        1 => b"\x1b",
+        102 => b"\x1b[H",
+        103 => b"\x1b[A",
+        104 => b"\x1b[5~",
+        105 => b"\x1b[D",
+        106 => b"\x1b[C",
+        107 => b"\x1b[F",
+        108 => b"\x1b[B",
+        109 => b"\x1b[6~",
+        110 => b"\x1b[2~",
+        111 => b"\x1b[3~",
+        _ => return false,
+    };
+    write(master, seq.as_ptr(), seq.len());
+    true
+}
+
 unsafe fn app_mut() -> &'static mut App {
     &mut *APP
 }
@@ -1478,7 +1497,7 @@ unsafe fn modeb_request_restore() {
         write(fd, msg.as_ptr(), msg.len());
         close(fd);
     }
-    eprint("[igettyd] Ctrl+Option+Backspace -> restore Aqua\n");
+    eprint("[igettyd] Ctrl+Option+Backspace (or Fn+Ctrl+Option+Backspace) -> restore Aqua\n");
     RUN.store(false, Ordering::SeqCst);
 }
 
@@ -1507,7 +1526,7 @@ pub extern "C" fn modeb_rs_handle_key(key: i32, pressed: i32) {
         let ctrl = CTRL.load(Ordering::SeqCst);
         let alt = ALT.load(Ordering::SeqCst);
         if ctrl != 0 && alt != 0 {
-            if key == 14 {
+            if key == 14 || key == 111 {
                 CTRL.store(0, Ordering::SeqCst);
                 ALT.store(0, Ordering::SeqCst);
                 modeb_request_restore();
@@ -1544,6 +1563,9 @@ pub extern "C" fn modeb_rs_handle_key(key: i32, pressed: i32) {
             return;
         }
         let shift = (SHIFT.load(Ordering::SeqCst) ^ CAPS.load(Ordering::SeqCst)) != 0;
+        if write_special_key(v.master, key) {
+            return;
+        }
         let mut c = key_to_ascii(key, shift);
         if key == 14 {
             c = 0x7f;
@@ -1824,7 +1846,7 @@ fn main() {
 Ctrl+Option+F1-F6 switch VTs. Assigned GUI VT runs the Desktop machine.\r\n\
 Weston/niri use iland DRM/KMS/GBM (no host Wayland after Take Over).\r\n\
 Ctrl+Option+F7 kmscube. F8 gbm-es2-demo. F9 vkcube-kms.\r\n\
-Ctrl+Option+Backspace restores Aqua. (MacBook: hold Fn for F-keys if needed)\r\n\r\n";
+Ctrl+Option+Backspace restores Aqua. Fn+Ctrl+Option+Backspace too (MacBook Fn+Delete). Hold Fn for F-keys if needed.\r\n\r\n";
         let text0 = first_text_vt();
         if (1..=VT_TEXT_COUNT as i32).contains(&text0) {
             vt_feed(&mut app.vts[(text0 - 1) as usize], banner);

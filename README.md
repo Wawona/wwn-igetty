@@ -41,7 +41,9 @@ solarized-dark `#859900`).
 
 Text VTs (every number 1-6 except the GUI VT) run `igetty` (Doorman). Switch
 with Ctrl+Option+F1-F6 (Option is Alt). Overlay KMS clients: F7 kmscube, F8
-gbm-es2-demo, F9 vkcube-kms. Ctrl+Option+Backspace restores Aqua.
+gbm-es2-demo, F9 vkcube-kms. Arrows, Page Up/Page Down, Home, and End send
+CSI on text VTs (MacBook: hold Fn with arrows). Ctrl+Option+Backspace restores Aqua.
+Fn+Ctrl+Option+Backspace does the same (MacBook Fn remaps Backspace to Delete).
 
 Text drawing matches Linux `fbcon` on a mapped scanout buffer: damage rects
 (`fbcon_putcs`), pixel copy on scroll (`fbcon_bmove`), fillrect for blanks
