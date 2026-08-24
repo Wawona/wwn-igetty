@@ -165,6 +165,17 @@ static int drop_and_exec_shell(const doorman_user_t *u) {
     unsetenv("DYLD_INSERT_LIBRARIES");
   }
   {
+    const char *session = getenv("WWN_MODEB_SESSION_BIN");
+    char zdot[1024];
+    if (session && session[0]) {
+      snprintf(zdot, sizeof(zdot), "%s/zdot/.zshenv", session);
+      if (access(zdot, R_OK) == 0) {
+        snprintf(zdot, sizeof(zdot), "%s/zdot", session);
+        setenv("ZDOTDIR", zdot, 1);
+      }
+    }
+  }
+  {
     char path[4096];
     const char *session = getenv("WWN_MODEB_SESSION_BIN");
     const char *bin = getenv("WWN_MODEB_BIN");

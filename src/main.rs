@@ -1309,12 +1309,37 @@ unsafe fn child_modeb_compositor_env() {
     setenv(mt.as_ptr(), one.as_ptr(), 1);
 }
 
+unsafe fn child_save_modeb_insert() {
+    if env_str("WWN_MODEB_INSERT").filter(|s| !s.is_empty()).is_some() {
+        return;
+    }
+    if let Some(ins) = env_str("DYLD_INSERT_LIBRARIES") {
+        if ins.is_empty() {
+            return;
+        }
+        let k = CString::new("WWN_MODEB_INSERT").unwrap();
+        let v = CString::new(ins).unwrap();
+        setenv(k.as_ptr(), v.as_ptr(), 1);
+    }
+}
+
+unsafe fn child_set_zdotdir(session: &str) {
+    let zdot = format!("{session}/zdot");
+    if std::path::Path::new(&zdot).join(".zshenv").is_file() {
+        let k = CString::new("ZDOTDIR").unwrap();
+        let v = CString::new(zdot).unwrap();
+        setenv(k.as_ptr(), v.as_ptr(), 1);
+    }
+}
+
 unsafe fn child_modeb_login_env() {
     child_modeb_compositor_env();
+    child_save_modeb_insert();
     if let Some(session) = session_bin_dir() {
         let sk = CString::new("WWN_MODEB_SESSION_BIN").unwrap();
         let sv = CString::new(session.as_str()).unwrap();
         setenv(sk.as_ptr(), sv.as_ptr(), 0);
+        child_set_zdotdir(&session);
         let rest = env_str("PATH").unwrap_or_else(|| {
             "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".into()
         });

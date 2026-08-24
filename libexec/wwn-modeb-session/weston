@@ -1,40 +1,44 @@
 #!/bin/sh
 # Mode B TTY: weston uses its DRM backend on iland KMS/GBM.
 # After Classic Take Over there is no host Wayland. Do not nest.
-unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
-export WWN_MODEB_TTY=1
-if [ -n "${WWN_MODEB_INSERT-}" ]; then
-  export DYLD_INSERT_LIBRARIES="$WWN_MODEB_INSERT"
-fi
-real="${WWN_MODEB_WESTON-}"
-if [ -z "$real" ] && [ -n "${WWN_MODEB_BIN-}" ]; then
-  real="$WWN_MODEB_BIN/weston"
-fi
-case "$real" in
-  */wwn-modeb-session/weston)
-    echo "modeb weston: WWN_MODEB_WESTON points at the session wrapper" >&2
-    exit 127
-    ;;
-esac
-if [ -z "$real" ] || [ ! -x "$real" ]; then
-  echo "modeb weston: set WWN_MODEB_WESTON to the bundled weston" >&2
+HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+# shellcheck source=/dev/null
+. "$HERE/env.sh"
+
+wwn_modeb_real_weston() {
+  for cand in \
+    "${WWN_MODEB_WESTON-}" \
+    "${WWN_MODEB_BIN-}/weston" \
+    "$HERE/../../bin/weston" \
+    "$HERE/../../../MacOS/weston" \
+    "/Applications/Wawona.app/Contents/Resources/bin/weston" \
+    "/Applications/Wawona.app/Contents/MacOS/weston"
+  do
+    case "$cand" in
+      ""|*/wwn-modeb-session/weston) continue ;;
+    esac
+    if [ -x "$cand" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+real=$(wwn_modeb_real_weston) || {
+  echo "modeb weston: bundled weston missing (set WWN_MODEB_WESTON)" >&2
   exit 127
-fi
+}
+
 has_backend=0
 prev=
 for a in "$@"; do
   case "$a" in
-    --backend=*|-B=*)
-      has_backend=1
-      ;;
-    --backend|-B)
-      has_backend=1
-      ;;
+    --backend=*|-B=*) has_backend=1 ;;
+    --backend|-B) has_backend=1 ;;
   esac
   case "$prev" in
-    --backend|-B)
-      has_backend=1
-      ;;
+    --backend|-B) has_backend=1 ;;
   esac
   prev=$a
 done

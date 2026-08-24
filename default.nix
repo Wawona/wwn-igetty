@@ -90,6 +90,13 @@ pkgs.stdenv.mkDerivation {
     ln -sf igetty $out/bin/modeb-getty
     install -m 755 libexec/wwn-modeb-session/niri $out/libexec/wwn-modeb-session/niri
     install -m 755 libexec/wwn-modeb-session/weston $out/libexec/wwn-modeb-session/weston
+    install -m 644 libexec/wwn-modeb-session/env.sh $out/libexec/wwn-modeb-session/env.sh
+    install -m 644 libexec/wwn-modeb-session/path.sh $out/libexec/wwn-modeb-session/path.sh
+    mkdir -p $out/libexec/wwn-modeb-session/zdot
+    install -m 644 libexec/wwn-modeb-session/zdot/.zshenv $out/libexec/wwn-modeb-session/zdot/.zshenv
+    install -m 644 libexec/wwn-modeb-session/zdot/.zprofile $out/libexec/wwn-modeb-session/zdot/.zprofile
+    install -m 644 libexec/wwn-modeb-session/zdot/.zshrc $out/libexec/wwn-modeb-session/zdot/.zshrc
+    install -m 644 libexec/wwn-modeb-session/zdot/.zlogin $out/libexec/wwn-modeb-session/zdot/.zlogin
   '';
 
   meta = with lib; {
