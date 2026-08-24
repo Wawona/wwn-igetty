@@ -1,16 +1,17 @@
-# Re-exec niri/weston as root via the Mode B helper. wayland-mac abort()s
-# unless euid is 0. Do not export DYLD_INSERT_LIBRARIES in the login shell.
-# The helper inserts only on the compositor exec, and only while
-# WindowServer is down. It must not restore Aqua or touch watchdogd.
+# Prefix iland Mode B insert on the compositor exec. The login user types
+# `niri` / `weston` (never sudo). open("/dev/dri/...") is iland via Dobby.
+# Do not export DYLD_INSERT_LIBRARIES in the parent shell.
 wwn_modeb_exec() {
-  if [ "$(id -u)" -eq 0 ]; then
-    exec "$@"
+  if [ -z "${WWN_MODEB_INSERT-}" ] && [ -r /tmp/libwayland-support/modeb-insert ]; then
+    WWN_MODEB_INSERT=$(sed -n '1p' /tmp/libwayland-support/modeb-insert)
+    export WWN_MODEB_INSERT
   fi
-  helper="${WWN_MODEB_HELPER:-/Library/Application Support/Wawona/run-modeb.sh}"
-  if [ -x "$helper" ]; then
-    exec /usr/bin/sudo -n "$helper" --exec-compositor -- "$@"
+  if [ -z "${WWN_MODEB_INSERT-}" ]; then
+    echo "modeb: WWN_MODEB_INSERT unset. Type niri after Classic Take Over" >&2
+    echo "so the session has iland userspace DRM insert. Never sudo niri." >&2
+    echo "Never open a real DRM node." >&2
+    exit 1
   fi
-  echo "modeb: niri/weston on a text VT needs Classic Take Over and $helper" >&2
-  echo "wayland-mac must run as root. Do not export DYLD_INSERT_LIBRARIES." >&2
-  exit 1
+  export DYLD_INSERT_LIBRARIES="$WWN_MODEB_INSERT"
+  exec "$@"
 }

@@ -1,10 +1,7 @@
 # Mode B TTY compositor env. Sourced by niri/weston wrappers.
 # After Classic Take Over there is no host Wayland. iland DRM/KMS/GBM.
-# Never export DYLD_INSERT_LIBRARIES here unless already root. The dylib
-# constructor abort()s for euid != 0 (2026-08-23 typed niri).
+# Never export DYLD_INSERT_LIBRARIES here (Apple /bin/* is arm64e).
+# Wrappers prefix insert on the compositor exec only.
 unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
 export WWN_MODEB_TTY=1
 export NIRI_BACKEND=tty
-if [ "$(id -u)" -eq 0 ] && [ -n "${WWN_MODEB_INSERT-}" ]; then
-  export DYLD_INSERT_LIBRARIES="$WWN_MODEB_INSERT"
-fi
