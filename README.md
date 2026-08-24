@@ -16,9 +16,11 @@ After Classic Take Over there is no host Wayland, so the GUI VT uses each
 compositor's own DRM/KMS/GBM backend (`--backend=drm` / `NIRI_BACKEND=tty`).
 Typing `niri` or `weston` on a Doorman text VT does the same: login env sets
 `NIRI_BACKEND=tty`, clears nested `WAYLAND_DISPLAY`, sets `ZDOTDIR` so login
-zsh keeps session wrappers first (ahead of `~/.local/bin`), and those wrappers
-restore `DYLD_INSERT_LIBRARIES` from `WWN_MODEB_INSERT` then exec the bundled
-binary on iland DRM. Do not nest. Mode A Machines Start is unchanged.
+zsh keeps session wrappers first (ahead of `~/.local/bin`). Those wrappers
+re-exec as root through the Mode B helper (`--exec-compositor`) so
+`libwayland-mac.dylib` is inserted only on the compositor (euid 0, WindowServer
+down). Do not export insert in the login shell. Do not nest. Mode A Machines
+Start is unchanged.
 
 The GUI session is **assigned a VT**. It is not hardcoded as VT1. Linux often
 puts GDM on `/dev/tty1`, but a display manager can pick another number.

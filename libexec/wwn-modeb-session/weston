@@ -4,6 +4,8 @@
 HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 # shellcheck source=/dev/null
 . "$HERE/env.sh"
+# shellcheck source=/dev/null
+. "$HERE/exec-root.sh"
 
 wwn_modeb_real_weston() {
   for cand in \
@@ -43,6 +45,6 @@ for a in "$@"; do
   prev=$a
 done
 if [ "$has_backend" -eq 0 ]; then
-  exec "$real" --backend=drm --continue-without-input "$@"
+  wwn_modeb_exec "$real" --backend=drm --continue-without-input "$@"
 fi
-exec "$real" "$@"
+wwn_modeb_exec "$real" "$@"

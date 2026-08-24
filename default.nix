@@ -91,6 +91,7 @@ pkgs.stdenv.mkDerivation {
     install -m 755 libexec/wwn-modeb-session/niri $out/libexec/wwn-modeb-session/niri
     install -m 755 libexec/wwn-modeb-session/weston $out/libexec/wwn-modeb-session/weston
     install -m 644 libexec/wwn-modeb-session/env.sh $out/libexec/wwn-modeb-session/env.sh
+    install -m 644 libexec/wwn-modeb-session/exec-root.sh $out/libexec/wwn-modeb-session/exec-root.sh
     install -m 644 libexec/wwn-modeb-session/path.sh $out/libexec/wwn-modeb-session/path.sh
     mkdir -p $out/libexec/wwn-modeb-session/zdot
     install -m 644 libexec/wwn-modeb-session/zdot/.zshenv $out/libexec/wwn-modeb-session/zdot/.zshenv

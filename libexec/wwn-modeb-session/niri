@@ -4,6 +4,8 @@
 HERE=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 # shellcheck source=/dev/null
 . "$HERE/env.sh"
+# shellcheck source=/dev/null
+. "$HERE/exec-root.sh"
 
 wwn_modeb_real_niri() {
   for cand in \
@@ -29,4 +31,4 @@ real=$(wwn_modeb_real_niri) || {
   echo "modeb niri: bundled niri missing (set WWN_MODEB_NIRI)" >&2
   exit 127
 }
-exec "$real" "$@"
+wwn_modeb_exec "$real" "$@"
