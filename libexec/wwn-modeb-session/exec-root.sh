@@ -13,5 +13,7 @@ wwn_modeb_exec() {
     exit 1
   fi
   export DYLD_INSERT_LIBRARIES="$WWN_MODEB_INSERT"
+  log="${WWN_MODEB_CLIENT_LOG:-/tmp/wawona-modeb-client.log}"
+  exec >>"$log" 2>&1
   exec "$@"
 }

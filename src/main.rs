@@ -598,9 +598,8 @@ unsafe fn drm_client_holds_scanout(app: &App) -> bool {
     if wwn_modeb_scanout_is_held() != 0 {
         return true;
     }
-    let av = ACTIVE_VT.load(Ordering::SeqCst);
-    if (1..=VT_TEXT_COUNT as i32).contains(&av) {
-        let shell = app.vts[(av - 1) as usize].shell_pid;
+    for i in 0..VT_TEXT_COUNT {
+        let shell = app.vts[i].shell_pid;
         if shell > 0 && wwn_modeb_session_runs_compositor(shell) != 0 {
             return true;
         }
@@ -2004,15 +2003,17 @@ Ctrl+Option+Backspace restores Aqua. Fn+Ctrl+Option+Backspace too (MacBook Fn+De
                     if pfd[i].revents & POLLIN == 0 {
                         continue;
                     }
-                    if app.vts[i].shell_pid > 0
-                        && wwn_modeb_session_runs_compositor(app.vts[i].shell_pid) != 0
-                    {
-                        continue;
-                    }
+                    let compositor = app.vts[i].shell_pid > 0
+                        && wwn_modeb_session_runs_compositor(app.vts[i].shell_pid) != 0;
                     let mut buf = [0u8; 4096];
-                    let n = read(app.vts[i].master, buf.as_mut_ptr(), buf.len());
-                    if n > 0 {
-                        vt_feed(&mut app.vts[i], &buf[..n as usize]);
+                    loop {
+                        let n = read(app.vts[i].master, buf.as_mut_ptr(), buf.len());
+                        if n <= 0 {
+                            break;
+                        }
+                        if !compositor {
+                            vt_feed(&mut app.vts[i], &buf[..n as usize]);
+                        }
                     }
                 }
             }
