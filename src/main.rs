@@ -91,6 +91,7 @@ struct App {
     gui_argv: Vec<String>,
     overlays: [OverlayClient; 3],
     getty: String,
+    scanout_yielded: bool,
 }
 
 unsafe impl Send for App {}
@@ -613,8 +614,14 @@ unsafe fn stop_external_drm_clients(app: &App) {
 
 unsafe fn present(app: &mut App) {
     if drm_client_holds_scanout(app) {
+        if !app.scanout_yielded {
+            unbind_text_crtcs(app);
+            app.scanout_yielded = true;
+            eprint("[igettyd] yield scanout to DRM compositor\n");
+        }
         return;
     }
+    app.scanout_yielded = false;
     for o in &mut app.outs {
         let back = 1 - o.front;
         let nbytes = o.pitch as usize * o.h as usize;
@@ -643,6 +650,22 @@ unsafe fn present(app: &mut App) {
         o.front = back;
         o.fb_id = fb;
         o.fb = o.maps[back];
+    }
+}
+
+unsafe fn unbind_text_crtcs(app: &App) {
+    for o in &app.outs {
+        let conn = [o.conn_id];
+        drmModeSetCrtc(
+            app.drm_fd,
+            o.crtc_id,
+            0,
+            0,
+            0,
+            conn.as_ptr(),
+            0,
+            ptr::null_mut(),
+        );
     }
 }
 
@@ -1425,6 +1448,23 @@ unsafe fn child_modeb_login_env() {
     }
 }
 
+unsafe fn child_apply_modeb_insert() {
+    child_save_modeb_insert();
+    let ins = env_str("WWN_MODEB_INSERT").or_else(|| {
+        std::fs::read_to_string("/tmp/libwayland-support/modeb-insert")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    let Some(ins) = ins else {
+        eprint("[igettyd] WARN: WWN_MODEB_INSERT missing for DRM client child\n");
+        return;
+    };
+    let k = CString::new("DYLD_INSERT_LIBRARIES").unwrap();
+    let v = CString::new(ins).unwrap();
+    setenv(k.as_ptr(), v.as_ptr(), 1);
+}
+
 unsafe fn start_graphics(app: &mut App) {
     if app.gfx_pid > 0 {
         return;
@@ -1438,6 +1478,7 @@ unsafe fn start_graphics(app: &mut App) {
         /* Mode B Classic has no host Wayland display. Weston/niri keep their
          * nested backends for Mode A Machines Start. This child is own-display. */
         child_modeb_compositor_env();
+        child_apply_modeb_insert();
         if app.drm_fd >= 0 {
             close(app.drm_fd);
         }
@@ -1487,6 +1528,8 @@ unsafe fn start_overlay(app: &mut App, vt: i32) {
     let pid = fork();
     if pid == 0 {
         child_clear_nested_wayland();
+        child_modeb_compositor_env();
+        child_apply_modeb_insert();
         if app.drm_fd >= 0 {
             close(app.drm_fd);
         }
@@ -1824,6 +1867,7 @@ fn main() {
                     g
                 }
             },
+            scanout_yielded: false,
         };
         GUI_VT.store(load_gui_vt(!app.gui_argv.is_empty()), Ordering::SeqCst);
         if app.getty.is_empty() {
@@ -1907,7 +1951,8 @@ weston, and niri. See `wwn-iland/.../shims/modeb-coord.h` and
 After login on a text VT, type `weston` or `niri` (session wrappers prefix
 `DYLD_INSERT_LIBRARIES` on the compositor exec only). igetty yields the panel
 while the lease is held or while the login session has a compositor descendant.\r\n\
-Ctrl+Option+F1-F6 switch VTs. Assigned GUI VT auto-starts the Desktop machine.\r\n\
+Ctrl+Option+F1-F6 switch VTs. Ctrl+Option+Fn switches to the assigned GUI VT\r\n\
+and auto-starts the Desktop machine compositor.\r\n\
 Ctrl+Option+F7 kmscube. F8 gbm-es2-demo. F9 vkcube-kms.\r\n\
 Ctrl+Option+Backspace restores Aqua. Fn+Ctrl+Option+Backspace too (MacBook Fn+Delete). Hold Fn for F-keys if needed.\r\n\r\n";
         let text0 = first_text_vt();
@@ -1915,13 +1960,9 @@ Ctrl+Option+Backspace restores Aqua. Fn+Ctrl+Option+Backspace too (MacBook Fn+De
             vt_feed(&mut app.vts[(text0 - 1) as usize], banner);
         }
 
-        let boot = if gui > 0 { gui } else { text0 };
+        let boot = text0;
         ACTIVE_VT.store(boot, Ordering::SeqCst);
-        if is_gui_vt(boot) {
-            start_graphics(app);
-        } else {
-            render_active_text(app);
-        }
+        render_active_text(app);
         eprint(&format!(
             "[igettyd] ready cols={cols} rows={rows} active=VT{boot} gui=VT{gui}\n"
         ));
