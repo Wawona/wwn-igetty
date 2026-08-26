@@ -337,7 +337,8 @@ extern "C" {
     fn mkdir(path: *const c_char, mode: u16) -> i32;
     fn signal(sig: i32, handler: usize) -> usize;
     fn open(path: *const c_char, oflag: i32, ...) -> i32;
-    fn wwn_modeb_scanout_is_held() -> i32;
+    fn getpid() -> i32;
+    fn wwn_modeb_scanout_is_held_except(except: i32) -> i32;
     fn wwn_modeb_scanout_stop_holder(except: i32) -> i32;
     fn wwn_modeb_session_runs_compositor(session_leader: i32) -> i32;
 }
@@ -595,7 +596,7 @@ unsafe fn drm_client_holds_scanout(app: &App) -> bool {
     if app.gfx_pid > 0 {
         return true;
     }
-    if wwn_modeb_scanout_is_held() != 0 {
+    if wwn_modeb_scanout_is_held_except(getpid()) != 0 {
         return true;
     }
     for i in 0..VT_TEXT_COUNT {
@@ -620,7 +621,11 @@ unsafe fn present(app: &mut App) {
         }
         return;
     }
-    app.scanout_yielded = false;
+    if app.scanout_yielded {
+        bind_text_crtcs(app);
+        app.scanout_yielded = false;
+        eprint("[igettyd] resume text scanout\n");
+    }
     for o in &mut app.outs {
         let back = 1 - o.front;
         let nbytes = o.pitch as usize * o.h as usize;
