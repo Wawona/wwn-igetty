@@ -322,6 +322,7 @@ extern "C" {
     fn poll(fds: *mut Pollfd, nfds: u32, timeout: i32) -> i32;
     fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
     fn kill(pid: i32, sig: i32) -> i32;
+    fn usleep(usec: u32) -> i32;
     fn clock_gettime(clk: i32, tp: *mut Timespec) -> i32;
     fn pthread_create(
         thread: *mut usize,
@@ -335,9 +336,14 @@ extern "C" {
     fn mkdir(path: *const c_char, mode: u16) -> i32;
     fn signal(sig: i32, handler: usize) -> usize;
     fn open(path: *const c_char, oflag: i32, ...) -> i32;
+    fn wwn_modeb_scanout_is_held() -> i32;
+    fn wwn_modeb_scanout_stop_holder(except: i32) -> i32;
+    fn wwn_modeb_session_runs_compositor(session_leader: i32) -> i32;
 }
 
+const O_RDONLY: i32 = 0;
 const SIGTERM: i32 = 15;
+const SIGKILL: i32 = 9;
 const SIGINT: i32 = 2;
 const SIGHUP: i32 = 1;
 const SIGCHLD: i32 = 20;
@@ -584,7 +590,31 @@ unsafe fn copy_vt_rect(app: &App, dest: VTermRect, src: VTermRect) {
     }
 }
 
+unsafe fn drm_client_holds_scanout(app: &App) -> bool {
+    if app.gfx_pid > 0 {
+        return true;
+    }
+    if wwn_modeb_scanout_is_held() != 0 {
+        return true;
+    }
+    let av = ACTIVE_VT.load(Ordering::SeqCst);
+    if (1..=VT_TEXT_COUNT as i32).contains(&av) {
+        let shell = app.vts[(av - 1) as usize].shell_pid;
+        if shell > 0 && wwn_modeb_session_runs_compositor(shell) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+unsafe fn stop_external_drm_clients(app: &App) {
+    wwn_modeb_scanout_stop_holder(app.gfx_pid);
+}
+
 unsafe fn present(app: &mut App) {
+    if drm_client_holds_scanout(app) {
+        return;
+    }
     for o in &mut app.outs {
         let back = 1 - o.front;
         let nbytes = o.pitch as usize * o.h as usize;
@@ -760,6 +790,9 @@ unsafe fn paint_cursor_only(app: &mut App) {
     if av < 1 || av > VT_TEXT_COUNT as i32 || is_gui_vt(av) {
         return;
     }
+    if drm_client_holds_scanout(app) {
+        return;
+    }
     let idx = (av - 1) as usize;
     if app.vts[idx].screen.is_null() {
         return;
@@ -792,6 +825,9 @@ unsafe fn paint_damage(outs: &[Output], cell_w: i32, cell_h: i32, v: &Vt, vt_num
 unsafe fn render_active_text(app: &mut App) {
     let av = ACTIVE_VT.load(Ordering::SeqCst);
     if av < 1 || av > VT_TEXT_COUNT as i32 {
+        return;
+    }
+    if drm_client_holds_scanout(app) {
         return;
     }
     let idx = (av - 1) as usize;
@@ -1281,12 +1317,31 @@ unsafe fn app_mut() -> &'static mut App {
 }
 
 unsafe fn stop_graphics(app: &mut App) {
-    if app.gfx_pid > 0 {
-        kill(app.gfx_pid, SIGTERM);
-        let mut st = 0;
-        waitpid(app.gfx_pid, &mut st, WNOHANG);
-        app.gfx_pid = -1;
+    if app.gfx_pid <= 0 {
+        return;
     }
+    let pid = app.gfx_pid;
+    kill(pid, SIGTERM);
+    for _ in 0..50 {
+        let mut st = 0;
+        let r = waitpid(pid, &mut st, WNOHANG);
+        if r == pid {
+            app.gfx_pid = -1;
+            return;
+        }
+        if r < 0 {
+            app.gfx_pid = -1;
+            return;
+        }
+        usleep(20_000);
+    }
+    let mut st = 0;
+    let r = waitpid(pid, &mut st, 0);
+    if r != pid {
+        kill(pid, SIGKILL);
+        waitpid(pid, &mut st, 0);
+    }
+    app.gfx_pid = -1;
 }
 
 unsafe fn child_clear_nested_wayland() {
@@ -1467,6 +1522,7 @@ unsafe fn switch_vt(app: &mut App, vt: i32) {
         if is_gui_vt(cur) || is_kms_vt(cur) {
             stop_graphics(app);
         }
+        stop_external_drm_clients(app);
         ACTIVE_VT.store(vt, Ordering::SeqCst);
         start_overlay(app, vt);
         return;
@@ -1475,6 +1531,7 @@ unsafe fn switch_vt(app: &mut App, vt: i32) {
         if is_kms_vt(cur) {
             stop_graphics(app);
         }
+        stop_external_drm_clients(app);
         ACTIVE_VT.store(vt, Ordering::SeqCst);
         start_graphics(app);
         return;
@@ -1843,8 +1900,14 @@ fn main() {
         pthread_create(&mut thr, ptr::null(), input_thread_entry, ptr::null_mut());
 
         let banner = b"\r\nwwn-igetty (Doorman login + Linux-shaped VTs)\r\n\
-Ctrl+Option+F1-F6 switch VTs. Assigned GUI VT runs the Desktop machine.\r\n\
-Weston/niri use iland DRM/KMS/GBM (no host Wayland after Take Over).\r\n\
+Mode B Classic TTY uses a **single scanout lease** shared by iland, igetty,
+weston, and niri. See `wwn-iland/.../shims/modeb-coord.h` and
+`Wawona/docs/agent-rules/wawona-modeb-coord.md`.
+
+After login on a text VT, type `weston` or `niri` (session wrappers prefix
+`DYLD_INSERT_LIBRARIES` on the compositor exec only). igetty yields the panel
+while the lease is held or while the login session has a compositor descendant.\r\n\
+Ctrl+Option+F1-F6 switch VTs. Assigned GUI VT auto-starts the Desktop machine.\r\n\
 Ctrl+Option+F7 kmscube. F8 gbm-es2-demo. F9 vkcube-kms.\r\n\
 Ctrl+Option+Backspace restores Aqua. Fn+Ctrl+Option+Backspace too (MacBook Fn+Delete). Hold Fn for F-keys if needed.\r\n\r\n";
         let text0 = first_text_vt();
@@ -1898,6 +1961,11 @@ Ctrl+Option+Backspace restores Aqua. Fn+Ctrl+Option+Backspace too (MacBook Fn+De
             if pr > 0 {
                 for i in 0..VT_TEXT_COUNT {
                     if pfd[i].revents & POLLIN == 0 {
+                        continue;
+                    }
+                    if app.vts[i].shell_pid > 0
+                        && wwn_modeb_session_runs_compositor(app.vts[i].shell_pid) != 0
+                    {
                         continue;
                     }
                     let mut buf = [0u8; 4096];

@@ -39,8 +39,9 @@
             registry = baseRegistry // wwn-iland.registryFragment;
           };
           iland = tc.buildForMacOS "iland" { };
+          modebCoordSrc = wwn-iland + "/dependencies/libs/iland/upstream/shims";
           pkg = pkgs.callPackage ./default.nix {
-            inherit iland;
+            inherit iland modebCoordSrc;
             doorman = doorman.packages.${system}.doorman;
           };
         in

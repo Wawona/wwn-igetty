@@ -4,6 +4,7 @@
   lib,
   pkgs,
   iland,
+  modebCoordSrc,
   doorman,
   ...
 }:
@@ -48,10 +49,11 @@ pkgs.stdenv.mkDerivation {
       ${doorman}/lib/libdoorman.a \
       $AUTH_FRAMEWORKS -lpam -lobjc \
       -o igetty
-    echo "CC CoreText + Mach + vterm shims"
+    echo "CC CoreText + Mach + vterm + modeb-coord shims"
     "$CLANG" $OBJCFLAGS -c modeb-tty-ctfont.m -o modeb-tty-ctfont.o
     "$CLANG" $CFLAGS -c modeb-tty-input.c -o modeb-tty-input.o
     "$CLANG" $CFLAGS -c modeb-tty-vterm.c -o modeb-tty-vterm.o
+    "$CLANG" $CFLAGS -c ${modebCoordSrc}/modeb-coord.c -o modeb-coord.o -I${modebCoordSrc}
     echo "CC font selftest"
     "$CLANG" $CFLAGS modeb-tty-font-selftest.c modeb-tty-ctfont.m $FRAMEWORKS -o modeb-tty-font-selftest
     ./modeb-tty-font-selftest
@@ -64,6 +66,7 @@ pkgs.stdenv.mkDerivation {
       -C link-arg=modeb-tty-ctfont.o \
       -C link-arg=modeb-tty-input.o \
       -C link-arg=modeb-tty-vterm.o \
+      -C link-arg=modeb-coord.o \
       -L native=${iland}/lib \
       -L native=${libvterm}/lib \
       -l iland_userland \
@@ -79,7 +82,8 @@ pkgs.stdenv.mkDerivation {
       -C link-arg=-framework -C link-arg=QuartzCore \
       -C link-arg=-framework -C link-arg=Metal \
       -C link-arg=-framework -C link-arg=Cocoa \
-      -C link-arg=-framework -C link-arg=CoreText
+      -C link-arg=-framework -C link-arg=CoreText \
+      -C link-arg=-lproc
     runHook postBuild
   '';
 

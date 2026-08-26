@@ -258,7 +258,8 @@ static int try_login(void) {
     return -1;
   }
 
-  printf("Welcome to Wawona Mode B console, %s.\n",
+  printf("Welcome to Wawona Mode B console, %s.\n"
+         "Type weston or niri to start a Wayland compositor on this VT (iland DRM).\n",
          u.full_name && u.full_name[0] ? u.full_name : user);
   fflush(stdout);
 

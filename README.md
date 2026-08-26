@@ -14,7 +14,8 @@ Weston and niri are **not** DRM-only. Machines Start still nests them
 (`--backend=wayland` / `NIRI_BACKEND=nested`) when Display Backend is Wayland.
 After Classic Take Over there is no host Wayland, so the GUI VT uses each
 compositor's own DRM/KMS/GBM backend (`--backend=drm` / `NIRI_BACKEND=tty`).
-Typing `niri` or `weston` on a Doorman text VT does the same: login env sets
+Typing `niri` or `weston` on a Doorman text VT is a **first-class** path: same
+iland DRM/KMS/GBM session as the assigned GUI VT. Login env sets
 `NIRI_BACKEND=tty`, clears nested `WAYLAND_DISPLAY`, sets `ZDOTDIR` so login
 zsh keeps session wrappers first (ahead of `~/.local/bin`). Those wrappers
 prefix `DYLD_INSERT_LIBRARIES` from `WWN_MODEB_INSERT` on the compositor exec
@@ -38,6 +39,11 @@ solarized-dark `#859900`).
 | `WWN_MODEB_KMSCUBE` | kmscube for Ctrl+Option+F7 |
 | `WWN_MODEB_GBM_ES2` | gbm-es2-demo for Ctrl+Option+F8 |
 | `WWN_MODEB_VKCUBE` | vkcube-kms for Ctrl+Option+F9 |
+
+`libwayland-mac.dylib` publishes `/tmp/libwayland-support/modeb-drm-client.pid`
+while a DRM client (typed `weston`/`niri`, GUI VT compositor, F7-F9 overlay) is
+running. igettyd skips text-VT pageflips while that pid is alive so console dumb
+buffers do not reclaim the panel from a compositor.
 
 Text VTs (every number 1-6 except the GUI VT) run `igetty` (Doorman). Switch
 with Ctrl+Option+F1-F6 (Option is Alt). Overlay KMS clients: F7 kmscube, F8
