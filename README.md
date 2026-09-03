@@ -67,3 +67,18 @@ Auth: [Doorman](https://github.com/Wawona/doorman) as a library. Do not call
 
 DAG: toolchain + iland (DRM present) + doorman. Never Wawona, never weston as
 a flake input. Cited in `Wawona/docs/wwn-repo-dag.md`.
+
+## iOS TrollStore logical sessions
+
+`wwn-igetty-core` owns the platform-neutral session state machine.
+`wwn-igetty-ios` is an in-process static library for
+`com.aspauldingcode.Wawona.ModeB`. It switches the Machines greeter, native
+clients, compositors, JIT VM/container sessions, and up to eight Wawona zsh
+PTY slots over one IOMFB output. Text input focus is selected with
+`wwn_ios_terminal_set_master`; it does not use `/dev/tty`, `fork`, a host
+login shell, or Doorman.
+
+The `wwn-igetty-jailbreak` crate reserves the same provider contract for a
+later Sileo implementation. It is intentionally not linked into TrollStore or
+App Store products. That later provider may add Doorman authentication,
+Procursus PTYs, and host APT.

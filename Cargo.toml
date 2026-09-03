@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/wwn-igetty-core",
+  "crates/wwn-igetty-ios",
+  "crates/wwn-igetty-jailbreak",
+]

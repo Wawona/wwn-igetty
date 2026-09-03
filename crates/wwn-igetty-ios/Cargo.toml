@@ -1,0 +1,11 @@
+[package]
+name = "wwn-igetty-ios"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+wwn-igetty-core = { path = "../wwn-igetty-core" }

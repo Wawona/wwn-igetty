@@ -1,5 +1,5 @@
 {
-  description = "wwn-igetty: Linux-shaped virtual terminals + Doorman login on iland DRM after macOS WindowServer is replaced. L3'. Not the Mode B dylib (that is wwn-iland baremetal).";
+  description = "wwn-igetty: Rust logical sessions for Wawona Desktop. macOS Classic uses iland DRM and Doorman; iOS TrollStore uses in-process Wawona PTYs.";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -8,7 +8,9 @@
     wwn-toolchain.url = "https://flakehub.com/f/Wawona/wwn-toolchain/*";
     wwn-toolchain.inputs.nixpkgs.follows = "nixpkgs";
     wwn-toolchain.inputs.rust-overlay.follows = "rust-overlay";
-    wwn-iland.url = "https://flakehub.com/f/Wawona/wwn-iland/*";
+    # IOMFB and Mode B coordinate shims are consumed from development.
+    # Cited: Wawona/docs/wwn-repo-dag.md.
+    wwn-iland.url = "github:Wawona/wwn-iland/development";
     wwn-iland.inputs.nixpkgs.follows = "nixpkgs";
     wwn-iland.inputs.rust-overlay.follows = "rust-overlay";
     wwn-iland.inputs.wwn-toolchain.follows = "wwn-toolchain";
@@ -44,11 +46,13 @@
             inherit iland modebCoordSrc;
             doorman = doorman.packages.${system}.doorman;
           };
+          iosSession = pkgs.callPackage ./ios-session.nix { inherit pkgs; };
         in
         {
           default = pkg;
           wwn-igetty = pkg;
           igettyd = pkg;
+          wwn-igetty-ios = iosSession;
         }
       );
     };

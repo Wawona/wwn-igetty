@@ -9,10 +9,15 @@
 #![allow(dead_code)]
 #![allow(clippy::missing_safety_doc)]
 
+#[path = "../crates/wwn-igetty-core/src/lib.rs"]
+mod session_core;
+
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io::{self, Write};
 use std::ptr;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use session_core::{Session, SessionKind, SessionSwitcher};
 
 const VT_TEXT_COUNT: usize = 6;
 const VT_OVERLAY_FIRST: i32 = 7;
@@ -37,6 +42,29 @@ static ALT: AtomicI32 = AtomicI32::new(0);
 static SHIFT: AtomicI32 = AtomicI32::new(0);
 static CAPS: AtomicI32 = AtomicI32::new(0);
 static GUI_VT: AtomicI32 = AtomicI32::new(0);
+
+static SESSION_SWITCHER: OnceLock<Mutex<SessionSwitcher>> = OnceLock::new();
+
+fn session_switcher() -> &'static Mutex<SessionSwitcher> {
+    SESSION_SWITCHER.get_or_init(|| {
+        let mut switcher = SessionSwitcher::new("Machines");
+        for id in 1..=VT_TEXT_COUNT as u32 {
+            switcher.register(Session {
+                id,
+                kind: SessionKind::Text,
+                label: format!("tty{id:02}"),
+            });
+        }
+        for id in VT_OVERLAY_FIRST as u32..=VT_OVERLAY_LAST as u32 {
+            switcher.register(Session {
+                id,
+                kind: SessionKind::Compositor,
+                label: format!("overlay-{id}"),
+            });
+        }
+        Mutex::new(switcher)
+    })
+}
 
 struct Output {
     crtc_id: u32,
@@ -1556,8 +1584,23 @@ fn is_gui_vt(vt: i32) -> bool {
     g > 0 && vt == g
 }
 
+fn commit_session_switch(vt: i32) {
+    let mut switcher = session_switcher().lock().expect("session switcher lock");
+    if let Ok(plan) = switcher.plan_switch(vt as u32) {
+        switcher.commit(plan);
+    }
+}
+
 unsafe fn switch_vt(app: &mut App, vt: i32) {
     if vt < 1 || (vt > VT_TEXT_COUNT as i32 && !is_kms_vt(vt)) {
+        return;
+    }
+    if session_switcher()
+        .lock()
+        .expect("session switcher lock")
+        .plan_switch(vt as u32)
+        .is_err()
+    {
         return;
     }
     let cur = ACTIVE_VT.load(Ordering::SeqCst);
@@ -1572,6 +1615,7 @@ unsafe fn switch_vt(app: &mut App, vt: i32) {
         stop_external_drm_clients(app);
         ACTIVE_VT.store(vt, Ordering::SeqCst);
         start_overlay(app, vt);
+        commit_session_switch(vt);
         return;
     }
     if is_gui_vt(vt) {
@@ -1581,6 +1625,7 @@ unsafe fn switch_vt(app: &mut App, vt: i32) {
         stop_external_drm_clients(app);
         ACTIVE_VT.store(vt, Ordering::SeqCst);
         start_graphics(app);
+        commit_session_switch(vt);
         return;
     }
     if is_gui_vt(cur) || is_kms_vt(cur) {
@@ -1591,6 +1636,7 @@ unsafe fn switch_vt(app: &mut App, vt: i32) {
     vt_mark_full(&mut app.vts[(vt - 1) as usize]);
     app.vts[(vt - 1) as usize].cur_drawn = false;
     render_active_text(app);
+    commit_session_switch(vt);
 }
 
 unsafe fn modeb_request_restore() {
@@ -1966,6 +2012,7 @@ Ctrl+Option+Backspace restores Aqua. Fn+Ctrl+Option+Backspace too (MacBook Fn+De
 
         let boot = text0;
         ACTIVE_VT.store(boot, Ordering::SeqCst);
+        commit_session_switch(boot);
         render_active_text(app);
         eprint(&format!(
             "[igettyd] ready cols={cols} rows={rows} active=VT{boot} gui=VT{gui}\n"
