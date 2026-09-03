@@ -41,11 +41,13 @@ extern "C" {
     fn wwn_ios_terminal_set_master(master_fd: c_int);
     fn wwn_ios_terminal_clear_master(master_fd: c_int);
     fn wwn_pty_ios_stop_shell_session();
+    fn wwn_pty_ios_live_masters(masters: *mut c_int, capacity: usize) -> usize;
 }
 
 struct IosSession {
     pty: usize,
     master_fd: c_int,
+    owned: bool,
 }
 
 struct IosBackend {
@@ -207,9 +209,65 @@ pub extern "C" fn wwn_igetty_ios_spawn_text_session(
         IosSession {
             pty: pty as usize,
             master_fd,
+            owned: true,
         },
     );
     id
+}
+
+#[no_mangle]
+pub extern "C" fn wwn_igetty_ios_adopt_live_text_sessions() -> u32 {
+    let count = unsafe { wwn_pty_ios_live_masters(ptr::null_mut(), 0) };
+    if count == 0 {
+        return 0;
+    }
+    let mut masters = vec![-1; count];
+    let actual = unsafe { wwn_pty_ios_live_masters(masters.as_mut_ptr(), masters.len()) };
+    masters.truncate(actual.min(masters.len()));
+
+    let mut guard = broker().lock().expect("igetty broker lock");
+    let Some(broker) = guard.as_mut() else {
+        return 0;
+    };
+    for master_fd in masters {
+        if master_fd < 0
+            || broker
+                .backend
+                .sessions
+                .values()
+                .any(|session| session.master_fd == master_fd)
+        {
+            continue;
+        }
+        let id = broker.next_id;
+        broker.next_id = broker.next_id.saturating_add(1);
+        let ordinal = broker
+            .backend
+            .sessions
+            .values()
+            .filter(|session| !session.owned)
+            .count()
+            + 1;
+        broker.switcher.register(Session {
+            id,
+            kind: SessionKind::Text,
+            label: format!("Wawona zsh {ordinal}"),
+        });
+        broker.backend.sessions.insert(
+            id,
+            IosSession {
+                pty: 0,
+                master_fd,
+                owned: false,
+            },
+        );
+    }
+    broker
+        .backend
+        .sessions
+        .values()
+        .filter(|session| !session.owned)
+        .count() as u32
 }
 
 #[no_mangle]
@@ -253,9 +311,21 @@ pub extern "C" fn wwn_igetty_ios_unregister_session(id: u32) {
         return;
     };
     if let Some(session) = broker.backend.sessions.remove(&id) {
-        unsafe { wwn_pty_session_destroy(session.pty as *mut PtySession) };
+        if session.owned {
+            unsafe { wwn_pty_session_destroy(session.pty as *mut PtySession) };
+        }
     }
     broker.switcher.unregister(id);
+}
+
+#[no_mangle]
+pub extern "C" fn wwn_igetty_ios_session_master(id: u32) -> c_int {
+    broker()
+        .lock()
+        .expect("igetty broker lock")
+        .as_ref()
+        .and_then(|broker| broker.backend.sessions.get(&id))
+        .map_or(-1, |session| session.master_fd)
 }
 
 #[no_mangle]
@@ -273,7 +343,9 @@ pub extern "C" fn wwn_igetty_ios_shutdown() {
     let mut guard = broker().lock().expect("igetty broker lock");
     if let Some(mut broker) = guard.take() {
         for (_, session) in std::mem::take(&mut broker.backend.sessions) {
-            unsafe { wwn_pty_session_destroy(session.pty as *mut PtySession) };
+            if session.owned {
+                unsafe { wwn_pty_session_destroy(session.pty as *mut PtySession) };
+            }
         }
     }
     unsafe { wwn_pty_ios_stop_shell_session() };

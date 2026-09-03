@@ -32,8 +32,10 @@ uint32_t wwn_igetty_ios_register_session(uint8_t kind, const char *label);
 uint32_t wwn_igetty_ios_spawn_text_session(const char *shell_path,
                                            const char *label, uint16_t rows,
                                            uint16_t cols);
+uint32_t wwn_igetty_ios_adopt_live_text_sessions(void);
 int32_t wwn_igetty_ios_switch_to(uint32_t session_id);
 void wwn_igetty_ios_unregister_session(uint32_t session_id);
+int32_t wwn_igetty_ios_session_master(uint32_t session_id);
 uint32_t wwn_igetty_ios_active_session(void);
 void wwn_igetty_ios_shutdown(void);
 
