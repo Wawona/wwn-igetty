@@ -339,6 +339,45 @@ pub extern "C" fn wwn_igetty_ios_active_session() -> u32 {
 }
 
 #[no_mangle]
+pub extern "C" fn wwn_igetty_ios_session_count() -> usize {
+    broker()
+        .lock()
+        .expect("igetty broker lock")
+        .as_ref()
+        .map_or(0, |broker| broker.switcher.sessions().count())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wwn_igetty_ios_session_at(
+    index: usize,
+    out_id: *mut u32,
+    out_kind: *mut u8,
+    label: *mut c_char,
+    label_capacity: usize,
+) -> c_int {
+    let guard = broker().lock().expect("igetty broker lock");
+    let Some(session) = guard
+        .as_ref()
+        .and_then(|broker| broker.switcher.sessions().nth(index))
+    else {
+        return -1;
+    };
+    if !out_id.is_null() {
+        *out_id = session.id;
+    }
+    if !out_kind.is_null() {
+        *out_kind = session.kind as u8;
+    }
+    if !label.is_null() && label_capacity > 0 {
+        let bytes = session.label.as_bytes();
+        let copied = bytes.len().min(label_capacity - 1);
+        ptr::copy_nonoverlapping(bytes.as_ptr(), label.cast::<u8>(), copied);
+        *label.add(copied) = 0;
+    }
+    0
+}
+
+#[no_mangle]
 pub extern "C" fn wwn_igetty_ios_shutdown() {
     let mut guard = broker().lock().expect("igetty broker lock");
     if let Some(mut broker) = guard.take() {

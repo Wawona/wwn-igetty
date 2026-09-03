@@ -1,6 +1,7 @@
 #ifndef WWN_IGETTY_IOS_H
 #define WWN_IGETTY_IOS_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -37,6 +38,10 @@ int32_t wwn_igetty_ios_switch_to(uint32_t session_id);
 void wwn_igetty_ios_unregister_session(uint32_t session_id);
 int32_t wwn_igetty_ios_session_master(uint32_t session_id);
 uint32_t wwn_igetty_ios_active_session(void);
+size_t wwn_igetty_ios_session_count(void);
+int32_t wwn_igetty_ios_session_at(size_t index, uint32_t *out_id,
+                                  uint8_t *out_kind, char *label,
+                                  size_t label_capacity);
 void wwn_igetty_ios_shutdown(void);
 
 #ifdef __cplusplus
