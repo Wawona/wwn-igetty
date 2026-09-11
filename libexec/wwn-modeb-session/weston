@@ -32,19 +32,61 @@ real=$(wwn_modeb_real_weston) || {
   exit 127
 }
 
+# Honeycomb is upstream data/background.png (RGB). Never pattern.png.
+if [ -z "${WESTON_CONFIG_FILE:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  _wawona_ini="$XDG_RUNTIME_DIR/weston.ini"
+  _wawona_bg=""
+  for _wawona_d in \
+    "${WESTON_DATA_DIR:-}" \
+    "${WWN_MODEB_BIN-}/../share/weston" \
+    "$HERE/../../share/weston" \
+    "$HERE/../../../Resources/share/weston" \
+    "/Applications/Wawona.app/Contents/Resources/share/weston"
+  do
+    case "$_wawona_d" in
+      "") continue ;;
+    esac
+    if [ -f "$_wawona_d/background.png" ]; then
+      _wawona_bg="$_wawona_d/background.png"
+      break
+    fi
+  done
+  {
+    printf '%s\n' "[core]" "use-pixman=false" "" "[shell]"
+    printf '%s\n' "background-color=0xff1a1a2e"
+    if [ -n "$_wawona_bg" ]; then
+      printf 'background-image=%s\n' "$_wawona_bg"
+      printf '%s\n' "background-type=scale"
+    fi
+    printf '%s\n' "panel-position=top"
+  } > "$_wawona_ini"
+  export WESTON_CONFIG_FILE="$_wawona_ini"
+  unset _wawona_ini _wawona_bg _wawona_d
+fi
+
 has_backend=0
+has_config=0
 prev=
 for a in "$@"; do
   case "$a" in
     --backend=*|-B=*) has_backend=1 ;;
     --backend|-B) has_backend=1 ;;
+    --config=*|--config) has_config=1 ;;
   esac
   case "$prev" in
     --backend|-B) has_backend=1 ;;
+    --config) has_config=1 ;;
   esac
   prev=$a
 done
 if [ "$has_backend" -eq 0 ]; then
+  if [ "$has_config" -eq 0 ] && [ -n "${WESTON_CONFIG_FILE:-}" ]; then
+    wwn_modeb_exec "$real" --backend=drm --continue-without-input \
+      --config="$WESTON_CONFIG_FILE" "$@"
+  fi
   wwn_modeb_exec "$real" --backend=drm --continue-without-input "$@"
+fi
+if [ "$has_config" -eq 0 ] && [ -n "${WESTON_CONFIG_FILE:-}" ]; then
+  wwn_modeb_exec "$real" --config="$WESTON_CONFIG_FILE" "$@"
 fi
 wwn_modeb_exec "$real" "$@"
