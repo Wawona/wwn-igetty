@@ -1,6 +1,6 @@
-#import <CoreFoundation/CoreFoundation.h>
-#import <CoreGraphics/CoreGraphics.h>
-#import <CoreText/CoreText.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <CoreText/CoreText.h>
 #include "modeb-tty-ctfont.h"
 #include <math.h>
 #include <stdio.h>

@@ -50,12 +50,12 @@ pkgs.stdenv.mkDerivation {
       $AUTH_FRAMEWORKS -lpam -lobjc \
       -o igetty
     echo "CC CoreText + Mach + vterm + modeb-coord shims"
-    "$CLANG" $OBJCFLAGS -c modeb-tty-ctfont.m -o modeb-tty-ctfont.o
+    "$CLANG" $CFLAGS -c modeb-tty-ctfont.c -o modeb-tty-ctfont.o $FRAMEWORKS
     "$CLANG" $CFLAGS -c modeb-tty-input.c -o modeb-tty-input.o
     "$CLANG" $CFLAGS -c modeb-tty-vterm.c -o modeb-tty-vterm.o
     "$CLANG" $CFLAGS -c ${modebCoordSrc}/modeb-coord.c -o modeb-coord.o -I${modebCoordSrc}
     echo "CC font selftest"
-    "$CLANG" $CFLAGS modeb-tty-font-selftest.c modeb-tty-ctfont.m $FRAMEWORKS -o modeb-tty-font-selftest
+    "$CLANG" $CFLAGS modeb-tty-font-selftest.c modeb-tty-ctfont.c $FRAMEWORKS -o modeb-tty-font-selftest
     ./modeb-tty-font-selftest
     echo "rustc igettyd"
     ${pkgs.rustc}/bin/rustc --edition 2021 -C opt-level=2 \
